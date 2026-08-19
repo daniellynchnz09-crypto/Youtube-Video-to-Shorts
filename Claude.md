@@ -161,6 +161,15 @@ Since every video run through this tool comes from a single channel/single speak
 - **Worth exploring instead:** Whisper's `prompt` parameter (supported by Groq's transcription endpoint) can bias output toward known vocabulary/phrasing — an accumulated channel-specific glossary (built up via the existing [Custom dictionary](#editing-in-review) feature, or a separate running list of the creator's common phrases/terms) could be fed in as a prompt hint on every transcription call, which may reduce misheard words without needing real fine-tuning.
 - Would need testing to see how much this actually moves accuracy before committing engineering time to it.
 
+### Learn from user title edits
+
+Observed during build-order step 1 testing (2026-08-19/20): the title generator repeatedly latches onto whatever's discussed in the clip's closing line(s) rather than what's representative of the whole clip, even after several rounds of prompt tuning aimed at this specific failure. Prompting alone may keep needing this kind of correction indefinitely.
+
+Idea: once [Title editing](#editing-in-review) exists in the review UI, capture the (original generated title, transcript, user's edited title) triple whenever a user actually changes a generated title. Over time this becomes a small dataset of "what this user considers a good title for this transcript" — same shape as the [Custom dictionary](#editing-in-review) feature's misheard-term corrections, just for titles instead of transcription.
+
+- **Possible use:** feed a handful of the user's own past (transcript excerpt → their edited title) pairs into the title-generation prompt as few-shot examples, so future titles drift toward the user's actual taste/style rather than staying static.
+- Would need enough edit volume to be useful — worth revisiting once real usage (multiple projects, not just smoke tests) produces a meaningful sample of edits, not before.
+
 ### Scheduled publishing to YouTube/TikTok
 
 Direct account linking from the app + scheduling clips to post automatically.
