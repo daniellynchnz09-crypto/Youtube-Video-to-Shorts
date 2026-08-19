@@ -13,9 +13,17 @@ export interface SegmentAnalyzer {
 }
 
 const MARKER_INTERVAL = 20
-/** Small trailing buffer so a clip doesn't audibly/visually cut off mid-word
- * when the last word's timestamp is slightly optimistic. */
-const END_PADDING_SECONDS = 0.4
+/**
+ * Trailing buffer so a clip doesn't audibly cut off mid-word when the last
+ * word's timestamp is slightly optimistic (Whisper's word-end timestamps
+ * tend to land a bit early on trailing consonants). Two tiers, chosen by
+ * the LLM per-segment: a quick cut when the speaker pivots to a new topic
+ * right after (too much padding would bleed into the next thought), and a
+ * more generous one for breathing room when the segment actually ends at
+ * the end of a sentence/thought.
+ */
+const QUICK_CUT_PADDING_SECONDS = 0.25
+const SENTENCE_END_PADDING_SECONDS = 0.8
 
 /**
  * Groq's free tier caps openai/gpt-oss-120b at 8000 tokens/minute — sending a
@@ -43,12 +51,13 @@ Rules:
 - Segments must not overlap.
 - startWordIndex/endWordIndex should be your best estimate of the actual word position — interpolate between the nearest markers.
 - Critical: pick boundaries that give the clip an obvious beginning and end. startWordIndex must land at (or very near) the start of a complete sentence or thought — not mid-sentence, so the viewer isn't dropped in without context. endWordIndex must land at (or very near) the end of a complete sentence or thought — not cut off mid-idea.
+- For each segment, also decide endsAtSentenceEnd: true if endWordIndex is genuinely the end of a full sentence/thought with nothing relevant said immediately after (the clip can afford a little breathing room there); false if you're cutting there specifically to stop before the speaker moves on to something new mid-sentence/mid-breath (the cut needs to be tight so the next topic doesn't bleed in).
 
 Transcript (${words.length} words total, video is ${videoDurationSeconds.toFixed(0)}s long):
 ${transcript}
 
 Respond with ONLY JSON matching this shape:
-{ "segments": [{ "startWordIndex": number, "endWordIndex": number, "reason": string }] }`
+{ "segments": [{ "startWordIndex": number, "endWordIndex": number, "endsAtSentenceEnd": boolean, "reason": string }] }`
 }
 
 const llmSegmentResponseSchema = z.object({
@@ -57,6 +66,7 @@ const llmSegmentResponseSchema = z.object({
       z.object({
         startWordIndex: z.number().int().nonnegative(),
         endWordIndex: z.number().int().nonnegative(),
+        endsAtSentenceEnd: z.boolean(),
         reason: z.string().min(1)
       })
     )
@@ -82,10 +92,11 @@ export const groqSegmentAnalyzer: SegmentAnalyzer = {
       const endWord = words[endIndex]
       if (!startWord || !endWord || endWord.end <= startWord.start) continue
 
+      const padding = s.endsAtSentenceEnd ? SENTENCE_END_PADDING_SECONDS : QUICK_CUT_PADDING_SECONDS
       segments.push(
         segmentSchema.parse({
           startTime: startWord.start,
-          endTime: Math.min(endWord.end + END_PADDING_SECONDS, videoDurationSeconds),
+          endTime: Math.min(endWord.end + padding, videoDurationSeconds),
           reason: s.reason
         })
       )
