@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { AbsoluteFill, OffthreadVideo, useCurrentFrame, useVideoConfig } from 'remotion'
 import { z } from 'zod'
 import type { SubtitleWord } from '../../../shared/types'
@@ -38,7 +39,8 @@ export const ShortClip: React.FC<ShortClipProps> = ({ videoSrc, title, words }) 
   const frame = useCurrentFrame()
   const { fps } = useVideoConfig()
   const currentTime = frame / fps
-  const visibleWords = getVisibleWords(words, currentTime)
+  const subtitleGroups = useMemo(() => buildSubtitleGroups(words), [words])
+  const visibleWords = getVisibleWords(subtitleGroups, currentTime)
 
   return (
     <AbsoluteFill style={{ backgroundColor: '#000' }}>
@@ -103,32 +105,55 @@ export const ShortClip: React.FC<ShortClipProps> = ({ videoSrc, title, words }) 
 }
 
 /**
- * Never shows a word before it's actually spoken (no look-ahead), and clears
- * the subtitles entirely during a pause instead of pre-displaying the next
- * sentence — a trailing window of already-spoken words, cut short at either
- * maxWords or the nearest pause/sentence gap, whichever comes first.
+ * Fixed, non-overlapping groups of up to maxWords, split early on a
+ * pause/sentence gap — precomputed once per clip rather than recomputed
+ * per-frame, since the grouping itself doesn't depend on playback time.
+ *
+ * Deliberately not a sliding window: an earlier version kept the trailing
+ * maxWords most-recently-spoken words on screen at all times, which meant
+ * words that had already been shown stuck around and got shown again
+ * alongside new ones every time the window advanced by one. Chunking into
+ * discrete groups means each word is only ever part of one on-screen group,
+ * even if that means a group has fewer than maxWords words in it.
  */
-function getVisibleWords(
+function buildSubtitleGroups(
   words: SubtitleWord[],
-  currentTime: number,
   maxWords = MAX_VISIBLE_WORDS,
   pauseBreakSeconds = PAUSE_BREAK_SECONDS
+): SubtitleWord[][] {
+  const groups: SubtitleWord[][] = []
+  let current: SubtitleWord[] = []
+  for (const word of words) {
+    if (current.length > 0) {
+      const gap = word.start - current[current.length - 1]!.end
+      if (gap > pauseBreakSeconds || current.length >= maxWords) {
+        groups.push(current)
+        current = []
+      }
+    }
+    current.push(word)
+  }
+  if (current.length > 0) groups.push(current)
+  return groups
+}
+
+/**
+ * Finds the most recently started group and reveals its words as they're
+ * actually spoken (no look-ahead within the group either), clearing once a
+ * pause after the group's last word exceeds pauseBreakSeconds.
+ */
+function getVisibleWords(
+  groups: SubtitleWord[][],
+  currentTime: number,
+  pauseBreakSeconds = PAUSE_BREAK_SECONDS
 ): SubtitleWord[] {
-  let lastSpokenIndex = -1
-  for (let i = 0; i < words.length; i++) {
-    if (words[i]!.start <= currentTime) lastSpokenIndex = i
-    else break
+  for (let g = groups.length - 1; g >= 0; g--) {
+    const group = groups[g]!
+    if (group[0]!.start <= currentTime) {
+      const lastWord = group[group.length - 1]!
+      if (currentTime - lastWord.end > pauseBreakSeconds) return []
+      return group.filter((w) => w.start <= currentTime)
+    }
   }
-  if (lastSpokenIndex === -1) return []
-
-  const lastWord = words[lastSpokenIndex]!
-  if (currentTime - lastWord.end > pauseBreakSeconds) return []
-
-  const window: SubtitleWord[] = [lastWord]
-  for (let i = lastSpokenIndex - 1; i >= 0 && window.length < maxWords; i--) {
-    const gap = words[i + 1]!.start - words[i]!.end
-    if (gap > pauseBreakSeconds) break
-    window.unshift(words[i]!)
-  }
-  return window
+  return []
 }
