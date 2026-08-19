@@ -1,0 +1,48 @@
+{
+  "name": "youtube-short-splitter",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local desktop app that splits a YouTube video into vertical shorts with AI-selected clips, generated titles, and karaoke-style subtitles.",
+  "type": "module",
+  "main": "app/main/index.ts",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "smoke": "tsx app/main/pipeline/smoke-test.ts"
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.2.0",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^43.4.1",
+    "electron-vite": "^5.0.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.6"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.2": true,
+    "yt-dlp-exec@1.0.2": true,
+    "esbuild@0.28.1": true,
+    "better-sqlite3@13.0.3": true
+  },
+  "dependencies": {
+    "@remotion/bundler": "4.0.512",
+    "@remotion/cli": "4.0.512",
+    "@remotion/renderer": "4.0.512",
+    "better-sqlite3": "^13.0.3",
+    "dotenv": "^17.4.2",
+    "groq-sdk": "^1.5.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "remotion": "4.0.512",
+    "yt-dlp-exec": "^1.0.2",
+    "zod": "^4.4.3"
+  }
+}
