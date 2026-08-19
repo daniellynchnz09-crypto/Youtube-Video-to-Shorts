@@ -28,6 +28,30 @@ const MARKER_INTERVAL = 10
  * before finishing a sentence they'd started).
  */
 const PAUSE_MARK_THRESHOLD_SECONDS = 0.6
+
+/**
+ * The LLM's endWordIndex is only ever an estimate (interpolated from sparse
+ * markers), and in practice it sometimes overshoots a few words into the
+ * next topic even with the prompt rules above. As a code-level backstop for
+ * "genuine sentence end" segments, snap backward from the LLM's pick to the
+ * nearest real pause in the actual word timestamps within a small window —
+ * silence is a much more reliable end-of-thought signal than index counting.
+ * Only applied when endsAtSentenceEnd is true; a deliberate quick cut has no
+ * pause to snap to by design, so it's left as the LLM chose it.
+ */
+const BOUNDARY_SNAP_SEARCH_WORDS = 15
+const BOUNDARY_SNAP_MIN_GAP_SECONDS = 0.35
+
+function snapEndIndexToPause(words: WordTimestamp[], startIndex: number, endIndex: number): number {
+  const earliest = Math.max(startIndex, endIndex - BOUNDARY_SNAP_SEARCH_WORDS)
+  for (let i = endIndex; i > earliest; i--) {
+    const gap = words[i]!.start - words[i - 1]!.end
+    if (gap >= BOUNDARY_SNAP_MIN_GAP_SECONDS) {
+      return i - 1
+    }
+  }
+  return endIndex
+}
 /**
  * Trailing buffer so a clip doesn't audibly cut off mid-word when the last
  * word's timestamp is slightly optimistic (Whisper's word-end timestamps
@@ -123,6 +147,9 @@ export const groqSegmentAnalyzer: SegmentAnalyzer = {
     for (const s of parsed.segments) {
       const startIndex = Math.min(s.startWordIndex, words.length - 1)
       let endIndex = Math.min(Math.max(s.endWordIndex, startIndex), words.length - 1)
+      if (s.endsAtSentenceEnd) {
+        endIndex = snapEndIndexToPause(words, startIndex, endIndex)
+      }
       const startWord = words[startIndex]
       let endWord = words[endIndex]
       if (!startWord || !endWord || endWord.end <= startWord.start) continue
