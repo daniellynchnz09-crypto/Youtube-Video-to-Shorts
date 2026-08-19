@@ -30,6 +30,9 @@ export type ShortClipProps = z.infer<typeof shortClipPropsSchema>
 const CENTER_VIDEO_WIDTH = 1080
 const CENTER_VIDEO_HEIGHT = Math.round((CENTER_VIDEO_WIDTH * 9) / 16)
 const MAX_VISIBLE_WORDS = 4
+/** A gap at least this long (seconds) between words is treated as a sentence/pause
+ * break: subtitles clear rather than jumping ahead to the next sentence early. */
+const PAUSE_BREAK_SECONDS = 0.5
 
 export const ShortClip: React.FC<ShortClipProps> = ({ videoSrc, title, words }) => {
   const frame = useCurrentFrame()
@@ -94,10 +97,33 @@ export const ShortClip: React.FC<ShortClipProps> = ({ videoSrc, title, words }) 
   )
 }
 
-function getVisibleWords(words: SubtitleWord[], currentTime: number, maxWords = MAX_VISIBLE_WORDS): SubtitleWord[] {
-  const activeIndex = words.findIndex((w) => currentTime >= w.start && currentTime <= w.end)
-  const centerIndex = activeIndex === -1 ? words.findIndex((w) => w.start > currentTime) : activeIndex
-  if (centerIndex === -1) return []
-  const start = Math.max(0, centerIndex - Math.floor(maxWords / 2))
-  return words.slice(start, start + maxWords)
+/**
+ * Never shows a word before it's actually spoken (no look-ahead), and clears
+ * the subtitles entirely during a pause instead of pre-displaying the next
+ * sentence — a trailing window of already-spoken words, cut short at either
+ * maxWords or the nearest pause/sentence gap, whichever comes first.
+ */
+function getVisibleWords(
+  words: SubtitleWord[],
+  currentTime: number,
+  maxWords = MAX_VISIBLE_WORDS,
+  pauseBreakSeconds = PAUSE_BREAK_SECONDS
+): SubtitleWord[] {
+  let lastSpokenIndex = -1
+  for (let i = 0; i < words.length; i++) {
+    if (words[i]!.start <= currentTime) lastSpokenIndex = i
+    else break
+  }
+  if (lastSpokenIndex === -1) return []
+
+  const lastWord = words[lastSpokenIndex]!
+  if (currentTime - lastWord.end > pauseBreakSeconds) return []
+
+  const window: SubtitleWord[] = [lastWord]
+  for (let i = lastSpokenIndex - 1; i >= 0 && window.length < maxWords; i--) {
+    const gap = words[i + 1]!.start - words[i]!.end
+    if (gap > pauseBreakSeconds) break
+    window.unshift(words[i]!)
+  }
+  return window
 }
