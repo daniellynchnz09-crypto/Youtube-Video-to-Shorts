@@ -13,6 +13,9 @@ export interface SegmentAnalyzer {
 }
 
 const MARKER_INTERVAL = 20
+/** Small trailing buffer so a clip doesn't audibly/visually cut off mid-word
+ * when the last word's timestamp is slightly optimistic. */
+const END_PADDING_SECONDS = 0.4
 
 /**
  * Groq's free tier caps openai/gpt-oss-120b at 8000 tokens/minute — sending a
@@ -39,6 +42,7 @@ Rules:
 - Return between 3 and ${maxSegments} segments, ranked most engaging first.
 - Segments must not overlap.
 - startWordIndex/endWordIndex should be your best estimate of the actual word position — interpolate between the nearest markers.
+- Critical: pick boundaries that give the clip an obvious beginning and end. startWordIndex must land at (or very near) the start of a complete sentence or thought — not mid-sentence, so the viewer isn't dropped in without context. endWordIndex must land at (or very near) the end of a complete sentence or thought — not cut off mid-idea.
 
 Transcript (${words.length} words total, video is ${videoDurationSeconds.toFixed(0)}s long):
 ${transcript}
@@ -81,7 +85,7 @@ export const groqSegmentAnalyzer: SegmentAnalyzer = {
       segments.push(
         segmentSchema.parse({
           startTime: startWord.start,
-          endTime: endWord.end,
+          endTime: Math.min(endWord.end + END_PADDING_SECONDS, videoDurationSeconds),
           reason: s.reason
         })
       )

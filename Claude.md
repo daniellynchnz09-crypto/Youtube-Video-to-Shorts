@@ -151,6 +151,16 @@ Youtube Short Splitter/
 
 Deferred for now, kept here so the thinking isn't lost.
 
+### Speaker-specific transcription accuracy
+
+Observed during build-order step 1 testing (2026-08-19): Whisper's transcription is mildly inaccurate on the creator's own speech (accent/speaking style, jargon aside) — not a code bug, just base transcription accuracy.
+
+Since every video run through this tool comes from a single channel/single speaker, there may be a way to adapt transcription specifically to that one voice rather than relying on generic Whisper accuracy:
+
+- **Not available:** Groq's hosted `whisper-large-v3` can't be fine-tuned — there's no per-speaker fine-tuning API on the free-tier hosted model.
+- **Worth exploring instead:** Whisper's `prompt` parameter (supported by Groq's transcription endpoint) can bias output toward known vocabulary/phrasing — an accumulated channel-specific glossary (built up via the existing [Custom dictionary](#editing-in-review) feature, or a separate running list of the creator's common phrases/terms) could be fed in as a prompt hint on every transcription call, which may reduce misheard words without needing real fine-tuning.
+- Would need testing to see how much this actually moves accuracy before committing engineering time to it.
+
 ### Scheduled publishing to YouTube/TikTok
 
 Direct account linking from the app + scheduling clips to post automatically.
