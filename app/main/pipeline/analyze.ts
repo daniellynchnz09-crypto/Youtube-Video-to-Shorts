@@ -12,7 +12,14 @@ export interface SegmentAnalyzer {
   analyze(groq: Groq, words: WordTimestamp[], videoDurationSeconds: number): Promise<Segment[]>
 }
 
-const MARKER_INTERVAL = 20
+/**
+ * Every Nth word gets an index marker for the LLM to reference (see
+ * buildPrompt). Smaller = less interpolation error on where a boundary
+ * actually lands, at the cost of more tokens — 10 was chosen after 20
+ * proved loose enough that an endWordIndex could land a few words into the
+ * next topic instead of at the true end of the current one.
+ */
+const MARKER_INTERVAL = 10
 /**
  * Gaps at or above this are called out inline in the transcript sent to the
  * LLM (see buildPrompt) — the transcript is otherwise just word tokens, so
@@ -77,6 +84,7 @@ Rules:
 - Segments must not overlap.
 - startWordIndex/endWordIndex should be your best estimate of the actual word position — interpolate between the nearest markers.
 - Critical: pick boundaries that give the clip an obvious beginning and end. startWordIndex must land at (or very near) the start of a complete sentence or thought — not mid-sentence, so the viewer isn't dropped in without context. endWordIndex must land at (or very near) the end of a complete sentence or thought — not cut off mid-idea.
+- When estimating endWordIndex, err toward landing a couple words early rather than late. Overshooting past the true end of the thought and into the next topic is worse than ending a beat sooner — the intended sentence/thought must not have any of the following topic's words bleeding into the clip.
 - Watch for false starts and stutters (e.g. "I'd probably be I'd probably be") — a repeated/incomplete phrase followed by a pause usually means the speaker is still collecting their thoughts mid-sentence, not concluding one. Don't let endWordIndex land there. Prefer pushing endWordIndex past the pause to include how the speaker actually finishes the thought, but only if that still fits the 15-60s limit above — if including the real completion would push the segment past 60s, end the segment earlier instead, before the repeated phrase begins, rather than breaking the duration limit.
 - For each segment, also decide endsAtSentenceEnd: true if endWordIndex is genuinely the end of a full sentence/thought with nothing relevant said immediately after (the clip can afford a little breathing room there); false if you're cutting there specifically to stop before the speaker moves on to something new mid-sentence/mid-breath (the cut needs to be tight so the next topic doesn't bleed in).
 

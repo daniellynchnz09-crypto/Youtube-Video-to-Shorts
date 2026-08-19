@@ -170,6 +170,25 @@ Idea: once [Title editing](#editing-in-review) exists in the review UI, capture 
 - **Possible use:** feed a handful of the user's own past (transcript excerpt → their edited title) pairs into the title-generation prompt as few-shot examples, so future titles drift toward the user's actual taste/style rather than staying static.
 - Would need enough edit volume to be useful — worth revisiting once real usage (multiple projects, not just smoke tests) produces a meaningful sample of edits, not before.
 
+### Game-specific context (terminology + asset recognition)
+
+Idea proposed 2026-08-20, sits alongside the [Custom dictionary](#editing-in-review) feature but is broader: since this channel plays specific games with their own in-game vocabulary (e.g. Geometry Dash calling its obstacles "spikes," not "enemies" — a generic word Whisper/the LLM defaults to), a per-game context profile could correct terminology at both the transcription-correction and title-generation stages.
+
+Envisioned shape of the feature (not built yet):
+
+- A GUI section (alongside the custom dictionary UI, likely same build-order step) where the user creates a **game context**: game name, then the app searches the game's wiki/other online sources for background info, plus user-submitted reference images of in-game assets (so clips can eventually be matched against known assets visually) and a terminology mapping list (generic/misheard term → correct in-game term).
+- A project could be tagged with an active game context; the dictionary-aware correction pass and title generation would apply that context's terminology mappings on top of (or instead of) the global custom dictionary when generating output.
+- Longer-term/more speculative piece: visual asset recognition (matching submitted reference images against clip frames) to auto-suggest which game context applies, or to ground terminology decisions in what's actually on screen — bigger scope than the terminology-mapping half, likely a separate later pass.
+
+**Geometry Dash starter terminology** (given by the user 2026-08-20, since it's the channel's main game — ready to seed once this feature exists):
+- enemies → spikes
+- stage → level
+- arrow → wave
+- jump ring → orb
+- hard level → demon
+
+Not implemented — no schema, UI, or pipeline wiring exists for this yet. Revisit once the custom dictionary feature itself (build-order step 4) is underway, since this extends the same underlying mechanism.
+
 ### Scheduled publishing to YouTube/TikTok
 
 Direct account linking from the app + scheduling clips to post automatically.
