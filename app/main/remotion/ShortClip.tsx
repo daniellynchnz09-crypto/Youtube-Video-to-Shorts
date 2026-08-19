@@ -1,6 +1,6 @@
-import { AbsoluteFill, Video, useCurrentFrame, useVideoConfig } from 'remotion'
+import { AbsoluteFill, OffthreadVideo, useCurrentFrame, useVideoConfig } from 'remotion'
 import { z } from 'zod'
-import type { SubtitleWord } from '../../../shared/types.js'
+import type { SubtitleWord } from '../../../shared/types'
 
 /**
  * Deliberately minimal for build-order step 1 (prove the render mechanism
@@ -40,7 +40,10 @@ export const ShortClip: React.FC<ShortClipProps> = ({ videoSrc, title, words }) 
   return (
     <AbsoluteFill style={{ backgroundColor: '#000' }}>
       <AbsoluteFill>
-        <Video
+        {/* OffthreadVideo (extracts frames server-side via ffmpeg) rather than
+            Video (an actual <video> element) — Chrome blocks an http-served
+            page from loading a local file:// video at all. */}
+        <OffthreadVideo
           src={videoSrc}
           style={{
             width: '100%',
@@ -69,7 +72,7 @@ export const ShortClip: React.FC<ShortClipProps> = ({ videoSrc, title, words }) 
       </AbsoluteFill>
 
       <AbsoluteFill style={{ justifyContent: 'center', alignItems: 'center' }}>
-        <Video src={videoSrc} style={{ width: CENTER_VIDEO_WIDTH, height: CENTER_VIDEO_HEIGHT }} />
+        <OffthreadVideo src={videoSrc} style={{ width: CENTER_VIDEO_WIDTH, height: CENTER_VIDEO_HEIGHT }} />
       </AbsoluteFill>
 
       <AbsoluteFill style={{ justifyContent: 'flex-end', alignItems: 'center', paddingBottom: 160 }}>

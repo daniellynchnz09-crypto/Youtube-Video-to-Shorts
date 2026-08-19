@@ -1,5 +1,5 @@
 import { Composition } from 'remotion'
-import { ShortClip, shortClipPropsSchema, type ShortClipProps } from './ShortClip.js'
+import { ShortClip, shortClipPropsSchema, type ShortClipProps } from './ShortClip'
 
 const FPS = 30
 

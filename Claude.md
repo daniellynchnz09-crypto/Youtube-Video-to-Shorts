@@ -25,7 +25,7 @@ Electron App (runs only while the user is using it)
   ├─ Main process (Node.js/TypeScript)
   │    - yt-dlp: downloads only the video segments needed for clips
   │    - Groq Whisper (whisper-large-v3): word-level transcription
-  │    - Groq-hosted LLM (e.g. Llama 3.3 70B): highlight/virality
+  │    - Groq-hosted LLM (openai/gpt-oss-120b): highlight/virality
   │      detection, clip titles, dictionary-aware transcript correction
   │      (free tier — see note below on swapping to Claude later)
   │    - Remotion: renders final 1080x1920 clips locally (GPU-accelerated
@@ -47,7 +47,7 @@ No polling, no job queue, no webhook exposure — UI and worker live in the same
 ### Why these providers
 
 - **Transcription — Groq-hosted Whisper (`whisper-large-v3`):** word-level timestamps, free tier covers personal-project volume, fast. (Claude's API is text-only, no audio transcription. Gemini access is capped at 20 prompts/day — too low since each video needs multiple AI calls that scale with clip count.)
-- **Analysis / titles / dictionary correction — Groq-hosted LLM (e.g. Llama 3.3 70B), for now:** free tier, reuses the Groq key already set up for transcription, $0 ongoing cost. Used for: finding the most engaging/viral segments, generating clip titles, and applying custom-dictionary-aware corrections to the transcript.
+- **Analysis / titles / dictionary correction — Groq-hosted LLM (`openai/gpt-oss-120b`), for now:** free tier, reuses the Groq key already set up for transcription, $0 ongoing cost. Used for: finding the most engaging/viral segments, generating clip titles, and applying custom-dictionary-aware corrections to the transcript. (Model choice as of 2026-08-19 — Groq's hosted lineup changes over time; `app/main/pipeline/analyze.ts`/`titles.ts` are the source of truth if this drifts.)
   - **Future expandability note:** Anthropic's Claude API was the original choice here and remains the natural upgrade path if clip/title quality on the free model isn't good enough — better judgment on "is this segment actually engaging" and better title copywriting, at the cost of paying for API credits separately from a claude.ai subscription (the two are billed independently; there's no free Claude API tier). Swapping providers later should only mean changing the LLM client in this one pipeline step, not a structural rework — worth keeping the analysis/title-generation code isolated behind a small interface for that reason.
 - **Rendering — Remotion, rendered locally:** free for personal use, React-based so the animated title/karaoke-subtitle/emoji-pop-in timing logic is just data-driven React components. Runs on the user's own hardware rather than a paid cloud renderer (e.g. Remotion Lambda).
 
