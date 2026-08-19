@@ -23,9 +23,15 @@ export async function downloadAudio(url: string, outPath: string): Promise<void>
 export async function downloadSegment(url: string, range: TimeRange, outPath: string): Promise<void> {
   // yt-dlp-exec's shipped types predate --download-sections,
   // --force-keyframes-at-cuts, and --merge-output-format.
+  //
+  // Explicit format selector (bestvideo+bestaudio, falling back to best) so
+  // the final rendered clip's audio matches source quality — unlike
+  // downloadAudio() above, this pass is never downsampled, since it feeds
+  // the actual render rather than just transcription.
   await ytdlp(url, {
     output: outPath,
     noPlaylist: true,
+    format: 'bestvideo*+bestaudio/best',
     downloadSections: `*${range.startTime}-${range.endTime}`,
     forceKeyframesAtCuts: true,
     mergeOutputFormat: 'mp4'

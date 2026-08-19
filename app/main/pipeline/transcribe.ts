@@ -39,69 +39,38 @@ export async function transcribeAudio(groq: Groq, audioPath: string): Promise<Tr
 /**
  * Whisper's word-level timestamps come from a forced-alignment pass that can
  * fail on fast/overlapping speech (observed on this channel's gameplay audio,
- * likely game SFX bleeding into the alignment) — when it fails, several words
- * in a row land on near-identical timestamps (e.g. 10 words crammed into
- * 0.2s) instead of spreading across when they were actually spoken. Left
- * alone, this makes karaoke subtitles flash through a burst of words almost
- * instantly and then show nothing while the audio is still catching up.
- * Detects those degenerate runs and spreads them back out (proportional to
- * word length) across the real gap until the next trustworthy timestamp.
+ * likely game SFX bleeding into the alignment). Two failure shapes seen in
+ * practice: (1) a run of words crammed into a near-zero-duration window, and
+ * (2) a word's start landing *before* the previous word has even finished
+ * (a real example: "Crypt" started at 11.78s while the prior word "give" ran
+ * until 12.20s). Left alone, both make karaoke subtitles flash through
+ * several words almost instantly and then show nothing while the speaker is
+ * still talking.
+ *
+ * Fixed in one forward pass: if a word starts before the previous one ends,
+ * push it (keeping its own original duration) to start right where the
+ * previous word ends; then, regardless of that, floor every word to a
+ * minimum plausible spoken duration. Each fix naturally cascades into the
+ * next word via the updated `prev.end`, so a whole crammed run gets spread
+ * back out rather than just the first offender in it.
  */
-const BURST_WORD_MAX_DURATION_SECONDS = 0.05
-const BURST_GAP_MAX_SECONDS = 0.05
-const BURST_MIN_RUN_LENGTH = 3
-const MIN_REDISTRIBUTED_WORD_SECONDS = 0.12
-const MAX_REDISTRIBUTED_WORD_SECONDS = 0.6
-const BURST_TRAILING_GAP_FRACTION = 0.15
+const MIN_PLAUSIBLE_WORD_DURATION_SECONDS = 0.1
 
 function normalizeWordTimestamps(words: WordTimestamp[]): WordTimestamp[] {
   const result = words.map((w) => ({ ...w }))
-  let i = 0
-  while (i < result.length) {
-    let j = i
-    while (
-      j < result.length &&
-      result[j]!.end - result[j]!.start <= BURST_WORD_MAX_DURATION_SECONDS &&
-      (j === i || result[j]!.start - result[j - 1]!.end <= BURST_GAP_MAX_SECONDS)
-    ) {
-      j++
+  for (let i = 0; i < result.length; i++) {
+    const cur = result[i]!
+    if (i > 0) {
+      const prevEnd = result[i - 1]!.end
+      if (cur.start < prevEnd) {
+        const originalDuration = Math.max(cur.end - cur.start, 0)
+        cur.start = prevEnd
+        cur.end = cur.start + originalDuration
+      }
     }
-    if (j - i >= BURST_MIN_RUN_LENGTH) {
-      redistributeBurst(result, i, j)
-      i = j
-    } else {
-      i++
+    if (cur.end - cur.start < MIN_PLAUSIBLE_WORD_DURATION_SECONDS) {
+      cur.end = cur.start + MIN_PLAUSIBLE_WORD_DURATION_SECONDS
     }
   }
   return result
-}
-
-/** Spreads result[start..end) evenly (by word length) across real time. `end` is exclusive. */
-function redistributeBurst(words: WordTimestamp[], start: number, end: number): void {
-  const burstStart = words[start]!.start
-  const nextWord = words[end]
-  const runLength = end - start
-  const rawWindow = nextWord
-    ? nextWord.start - burstStart
-    : runLength * MAX_REDISTRIBUTED_WORD_SECONDS
-  const usableWindow = Math.max(
-    nextWord ? rawWindow * (1 - BURST_TRAILING_GAP_FRACTION) : rawWindow,
-    MIN_REDISTRIBUTED_WORD_SECONDS * runLength
-  )
-
-  const lengths: number[] = []
-  for (let k = start; k < end; k++) lengths.push(Math.max(words[k]!.word.trim().length, 1))
-  const totalChars = lengths.reduce((a, b) => a + b, 0)
-
-  let cursor = burstStart
-  for (let k = start; k < end; k++) {
-    const share = lengths[k - start] / totalChars
-    const duration = Math.min(
-      Math.max(usableWindow * share, MIN_REDISTRIBUTED_WORD_SECONDS),
-      MAX_REDISTRIBUTED_WORD_SECONDS
-    )
-    words[k]!.start = cursor
-    words[k]!.end = cursor + duration
-    cursor += duration
-  }
 }

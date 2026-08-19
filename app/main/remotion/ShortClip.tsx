@@ -45,8 +45,13 @@ export const ShortClip: React.FC<ShortClipProps> = ({ videoSrc, title, words }) 
       <AbsoluteFill>
         {/* OffthreadVideo (extracts frames server-side via ffmpeg) rather than
             Video (an actual <video> element) — Chrome blocks an http-served
-            page from loading a local file:// video at all. */}
+            page from loading a local file:// video at all. Muted: this and
+            the center OffthreadVideo below share the same src, and Remotion
+            mixes audio from every non-muted video layer — without this the
+            same audio track got mixed in twice, summing to clipped/distorted
+            output audio. */}
         <OffthreadVideo
+          muted
           src={videoSrc}
           style={{
             width: '100%',
