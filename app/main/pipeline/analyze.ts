@@ -254,9 +254,19 @@ export const groqSegmentAnalyzer: SegmentAnalyzer = {
       }
       if (!endWord || endWord.end <= startWord.start) continue
 
+      // Padding is meant to add trailing silence/breathing room after the
+      // clip's own content ends, not to reach into whatever's said next. If
+      // the next real word starts before the padding window would end (a
+      // real example: "further." ended at 37.62s with the next sentence's
+      // "I" starting at 37.62s too, zero gap), a flat padding value grabs a
+      // fragment of that next word/sentence instead of actual silence — cap
+      // it at the real gap to the next word so it never crosses that line.
       const padding = s.endsAtSentenceEnd ? SENTENCE_END_PADDING_SECONDS : QUICK_CUT_PADDING_SECONDS
+      const nextWord = words[endIndex + 1]
+      const maxPaddingBeforeNextWord = nextWord ? Math.max(0, nextWord.start - endWord.end) : Infinity
+      const effectivePadding = Math.min(padding, maxPaddingBeforeNextWord)
       const endTime = Math.min(
-        endWord.end + padding,
+        endWord.end + effectivePadding,
         videoDurationSeconds,
         startWord.start + MAX_SEGMENT_SECONDS
       )
