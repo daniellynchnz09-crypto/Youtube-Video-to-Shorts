@@ -26,7 +26,7 @@ const execFileAsync = promisify(execFile)
 
 // A short YouTube URL you're comfortable repeatedly re-downloading/re-transcribing
 // during development. Not guessed on your behalf — fill this in before running.
-const TEST_URL = ''
+const TEST_URL = 'https://youtu.be/7s7FvLsJjwc'
 
 async function main(): Promise<void> {
   if (!TEST_URL) {
