@@ -52,6 +52,66 @@ function snapEndIndexToPause(words: WordTimestamp[], startIndex: number, endInde
   }
   return endIndex
 }
+
+/**
+ * Regardless of what the LLM decided, a segment should never end on a word
+ * that's grammatically incomplete on its own — the prompt says so, but it's
+ * not always followed (observed ending on "are", then "I'm", then "actually"
+ * across successive attempts at blocklisting specific words — a fixed word
+ * list is whack-a-mole and can never cover every case).
+ *
+ * A more general, more reliable signal: Groq's Whisper transcription already
+ * attaches punctuation to words (e.g. "chaos!", "control."), and every bad
+ * ending observed so far had none. So instead of matching against a word
+ * list, push endIndex forward until it lands on a word that actually carries
+ * clause-ending punctuation — bounded by MAX_SEGMENT_SECONDS so this can't
+ * blow past the duration cap enforced further down. The word list is kept
+ * as a secondary check for the rare case where punctuation is missing but
+ * the word is still an obvious dangler.
+ */
+const DANGLING_END_WORDS = new Set([
+  'a', 'an', 'the', 'and', 'or', 'but', 'so', 'because', 'that', 'which', 'who', 'whose',
+  'is', 'are', 'was', 'were', 'am', 'be', 'been', 'being', 'to', 'of', 'in', 'on', 'at',
+  'for', 'with', 'as', 'by', 'from', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'this',
+  'these', 'those', 'my', 'your', 'his', 'her', 'its', 'our', 'their', 'if', 'when',
+  'while', 'than', 'then', 'not', 'no', 'very', 'really', 'just', 'like',
+  // contractions — these strip to keep their apostrophe (see stripWord), and
+  // are just as dangling as their expanded form ("I'm" == "I am")
+  "i'm", "it's", "that's", "there's", "he's", "she's", "what's", "who's", "here's",
+  "we're", "you're", "they're", "i've", "you've", "we've", "they've",
+  "i'll", "you'll", "he'll", "she'll", "we'll", "they'll", "it'll",
+  "i'd", "you'd", "he'd", "she'd", "we'd", "they'd",
+  "isn't", "wasn't", "aren't", "weren't", "don't", "doesn't", "didn't",
+  "can't", "won't", "wouldn't", "couldn't", "shouldn't", "mustn't", "let's"
+])
+const DANGLING_EXTEND_MAX_WORDS = 12
+
+function stripWord(raw: string): string {
+  return raw.toLowerCase().replace(/[^a-z']/g, '')
+}
+
+function hasClauseEndingPunctuation(word: string): boolean {
+  return /[.,!?;:]["')\]]*$/.test(word.trim())
+}
+
+function extendPastDanglingWord(
+  words: WordTimestamp[],
+  startIndex: number,
+  endIndex: number
+): number {
+  let idx = endIndex
+  let extended = 0
+  while (
+    idx < words.length - 1 &&
+    extended < DANGLING_EXTEND_MAX_WORDS &&
+    (!hasClauseEndingPunctuation(words[idx]!.word) || DANGLING_END_WORDS.has(stripWord(words[idx]!.word))) &&
+    words[idx + 1]!.end - words[startIndex]!.start <= MAX_SEGMENT_SECONDS
+  ) {
+    idx++
+    extended++
+  }
+  return idx
+}
 /**
  * Trailing buffer so a clip doesn't audibly cut off mid-word when the last
  * word's timestamp is slightly optimistic (Whisper's word-end timestamps
@@ -110,7 +170,8 @@ Rules:
 - Critical: pick boundaries that give the clip an obvious beginning and end. startWordIndex must land at (or very near) the start of a complete sentence or thought — not mid-sentence, so the viewer isn't dropped in without context. endWordIndex must land at (or very near) the end of a complete sentence or thought — not cut off mid-idea.
 - When estimating endWordIndex, err toward landing a couple words early rather than late. Overshooting past the true end of the thought and into the next topic is worse than ending a beat sooner — the intended sentence/thought must not have any of the following topic's words bleeding into the clip.
 - Watch for false starts and stutters (e.g. "I'd probably be I'd probably be") — a repeated/incomplete phrase followed by a pause usually means the speaker is still collecting their thoughts mid-sentence, not concluding one. Don't let endWordIndex land there. Prefer pushing endWordIndex past the pause to include how the speaker actually finishes the thought, but only if that still fits the 15-60s limit above — if including the real completion would push the segment past 60s, end the segment earlier instead, before the repeated phrase begins, rather than breaking the duration limit.
-- For each segment, also decide endsAtSentenceEnd: true if endWordIndex is genuinely the end of a full sentence/thought with nothing relevant said immediately after (the clip can afford a little breathing room there); false if you're cutting there specifically to stop before the speaker moves on to something new mid-sentence/mid-breath (the cut needs to be tight so the next topic doesn't bleed in).
+- endWordIndex must ALWAYS land at the end of a grammatically complete clause — e.g. never on a conjunction ("and", "so", "because"), a dangling article/pronoun ("that", "a", "this"), or an auxiliary verb with no completion ("are", "is", "was"). This applies equally whether endsAtSentenceEnd is true or false — the two cases are only about what happens right after the clip's own content ends, never about whether the clip's own last clause is finished.
+- For each segment, also decide endsAtSentenceEnd: true if, right after endWordIndex, the speaker pauses or the thought is fully closed with nothing relevant said immediately next (the clip can afford a little breathing room there); false if the speaker keeps talking immediately after endWordIndex with no gap — a new topic, or more on the same one — so a big pad would bleed into it and the cut needs to be tight.
 
 Transcript (${words.length} words total, video is ${videoDurationSeconds.toFixed(0)}s long):
 ${transcript}
@@ -132,16 +193,47 @@ const llmSegmentResponseSchema = z.object({
     .min(1)
 })
 
+/**
+ * Groq occasionally returns a 400 json_validate_failed with an empty
+ * failed_generation for this call — observed correlating with a tight
+ * remaining-token budget on the free tier's 8000/min cap (most often hit by
+ * running several analyses back-to-back within the same rolling minute).
+ * groq-sdk's own retry logic doesn't cover this since Groq reports it as a
+ * 400 (a client-error status, not one the SDK treats as transient), so it's
+ * retried here explicitly with a short backoff instead of failing the whole
+ * pipeline run over what's empirically a transient hiccup.
+ */
+const ANALYZE_MAX_ATTEMPTS = 3
+const ANALYZE_RETRY_BASE_DELAY_MS = 4000
+
+async function requestSegments(
+  groq: Groq,
+  words: WordTimestamp[],
+  videoDurationSeconds: number
+): Promise<z.infer<typeof llmSegmentResponseSchema>> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= ANALYZE_MAX_ATTEMPTS; attempt++) {
+    try {
+      const completion = await groq.chat.completions.create({
+        model: 'openai/gpt-oss-120b',
+        messages: [{ role: 'user', content: buildPrompt(words, videoDurationSeconds) }],
+        response_format: { type: 'json_object' }
+      })
+      const raw = completion.choices[0]?.message?.content ?? '{}'
+      return llmSegmentResponseSchema.parse(JSON.parse(raw))
+    } catch (err) {
+      lastError = err
+      if (attempt < ANALYZE_MAX_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, ANALYZE_RETRY_BASE_DELAY_MS * attempt))
+      }
+    }
+  }
+  throw lastError
+}
+
 export const groqSegmentAnalyzer: SegmentAnalyzer = {
   async analyze(groq, words, videoDurationSeconds) {
-    const completion = await groq.chat.completions.create({
-      model: 'openai/gpt-oss-120b',
-      messages: [{ role: 'user', content: buildPrompt(words, videoDurationSeconds) }],
-      response_format: { type: 'json_object' }
-    })
-
-    const raw = completion.choices[0]?.message?.content ?? '{}'
-    const parsed = llmSegmentResponseSchema.parse(JSON.parse(raw))
+    const parsed = await requestSegments(groq, words, videoDurationSeconds)
 
     const segments: Segment[] = []
     for (const s of parsed.segments) {
@@ -150,6 +242,7 @@ export const groqSegmentAnalyzer: SegmentAnalyzer = {
       if (s.endsAtSentenceEnd) {
         endIndex = snapEndIndexToPause(words, startIndex, endIndex)
       }
+      endIndex = extendPastDanglingWord(words, startIndex, endIndex)
       const startWord = words[startIndex]
       let endWord = words[endIndex]
       if (!startWord || !endWord || endWord.end <= startWord.start) continue
