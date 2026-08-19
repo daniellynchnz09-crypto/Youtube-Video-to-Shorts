@@ -27,6 +27,8 @@ export const groqTitleGenerator: TitleGenerator = {
           role: 'user',
           content: `Write one short, clickable, attention-grabbing title for a vertical short-form video clip based on this transcript excerpt. Explain what the clip is about while staying intriguing.
 
+Base the title on what's substantially discussed across most of the clip's runtime. Even when the transcript ends on a complete, well-formed sentence, don't build the title around a detail, question, or hook that only shows up in that closing line — if that subject isn't also present earlier in the transcript, it's not representative of the clip and shouldn't drive the title.
+
 Transcript:
 ${transcript}${endingNote}
 
