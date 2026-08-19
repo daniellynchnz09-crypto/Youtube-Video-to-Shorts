@@ -14,6 +14,14 @@ export interface SegmentAnalyzer {
 
 const MARKER_INTERVAL = 20
 /**
+ * Gaps at or above this are called out inline in the transcript sent to the
+ * LLM (see buildPrompt) — the transcript is otherwise just word tokens, so
+ * without this the model has no way to tell a real sentence boundary from a
+ * mid-sentence hesitation (e.g. a speaker pausing to collect their thoughts
+ * before finishing a sentence they'd started).
+ */
+const PAUSE_MARK_THRESHOLD_SECONDS = 0.6
+/**
  * Trailing buffer so a clip doesn't audibly cut off mid-word when the last
  * word's timestamp is slightly optimistic (Whisper's word-end timestamps
  * tend to land a bit early on trailing consonants). Two tiers, chosen by
@@ -24,6 +32,15 @@ const MARKER_INTERVAL = 20
  */
 const QUICK_CUT_PADDING_SECONDS = 0.25
 const SENTENCE_END_PADDING_SECONDS = 0.8
+
+/**
+ * Hard backstop for the 15-60s rule stated in the prompt below. The LLM
+ * mostly follows it, but not always (e.g. it can choose to ride out a pause
+ * to reach a real sentence end and land just past 60s) — enforced here in
+ * code rather than trusted purely to prompt-following.
+ */
+const MIN_SEGMENT_SECONDS = 15
+const MAX_SEGMENT_SECONDS = 60
 
 /**
  * Groq's free tier caps openai/gpt-oss-120b at 8000 tokens/minute — sending a
@@ -37,13 +54,22 @@ const SENTENCE_END_PADDING_SECONDS = 0.8
  */
 function buildPrompt(words: WordTimestamp[], videoDurationSeconds: number): string {
   const maxSegments = Math.min(50, Math.max(3, Math.round(videoDurationSeconds / 60)))
-  const transcript = words
-    .map((w, i) => (i % MARKER_INTERVAL === 0 ? `«${i}»${w.word}` : w.word))
-    .join(' ')
+  const parts: string[] = []
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i]!
+    if (i > 0) {
+      const gap = word.start - words[i - 1]!.end
+      if (gap >= PAUSE_MARK_THRESHOLD_SECONDS) {
+        parts.push(`‖pause ${gap.toFixed(1)}s‖`)
+      }
+    }
+    parts.push(i % MARKER_INTERVAL === 0 ? `«${i}»${word.word}` : word.word)
+  }
+  const transcript = parts.join(' ')
 
   return `You are selecting the most engaging, viral-worthy segments from a video transcript to turn into vertical short-form clips.
 
-The transcript below has a word-index marker like «140» before every ${MARKER_INTERVAL}th word, so you can reference positions without counting every word yourself.
+The transcript below has a word-index marker like «140» before every ${MARKER_INTERVAL}th word, so you can reference positions without counting every word yourself. It also has inline markers like ‖pause 1.3s‖ wherever the speaker paused that long before their next word.
 
 Rules:
 - Each segment must correspond to roughly 15-60 seconds of speech.
@@ -51,6 +77,7 @@ Rules:
 - Segments must not overlap.
 - startWordIndex/endWordIndex should be your best estimate of the actual word position — interpolate between the nearest markers.
 - Critical: pick boundaries that give the clip an obvious beginning and end. startWordIndex must land at (or very near) the start of a complete sentence or thought — not mid-sentence, so the viewer isn't dropped in without context. endWordIndex must land at (or very near) the end of a complete sentence or thought — not cut off mid-idea.
+- Watch for false starts and stutters (e.g. "I'd probably be I'd probably be") — a repeated/incomplete phrase followed by a pause usually means the speaker is still collecting their thoughts mid-sentence, not concluding one. Don't let endWordIndex land there. Prefer pushing endWordIndex past the pause to include how the speaker actually finishes the thought, but only if that still fits the 15-60s limit above — if including the real completion would push the segment past 60s, end the segment earlier instead, before the repeated phrase begins, rather than breaking the duration limit.
 - For each segment, also decide endsAtSentenceEnd: true if endWordIndex is genuinely the end of a full sentence/thought with nothing relevant said immediately after (the clip can afford a little breathing room there); false if you're cutting there specifically to stop before the speaker moves on to something new mid-sentence/mid-breath (the cut needs to be tight so the next topic doesn't bleed in).
 
 Transcript (${words.length} words total, video is ${videoDurationSeconds.toFixed(0)}s long):
@@ -87,16 +114,29 @@ export const groqSegmentAnalyzer: SegmentAnalyzer = {
     const segments: Segment[] = []
     for (const s of parsed.segments) {
       const startIndex = Math.min(s.startWordIndex, words.length - 1)
-      const endIndex = Math.min(Math.max(s.endWordIndex, startIndex), words.length - 1)
+      let endIndex = Math.min(Math.max(s.endWordIndex, startIndex), words.length - 1)
       const startWord = words[startIndex]
-      const endWord = words[endIndex]
+      let endWord = words[endIndex]
       if (!startWord || !endWord || endWord.end <= startWord.start) continue
 
+      while (endIndex > startIndex && endWord!.end - startWord.start > MAX_SEGMENT_SECONDS) {
+        endIndex -= 1
+        endWord = words[endIndex]
+      }
+      if (!endWord || endWord.end <= startWord.start) continue
+
       const padding = s.endsAtSentenceEnd ? SENTENCE_END_PADDING_SECONDS : QUICK_CUT_PADDING_SECONDS
+      const endTime = Math.min(
+        endWord.end + padding,
+        videoDurationSeconds,
+        startWord.start + MAX_SEGMENT_SECONDS
+      )
+      if (endTime - startWord.start < MIN_SEGMENT_SECONDS) continue
+
       segments.push(
         segmentSchema.parse({
           startTime: startWord.start,
-          endTime: Math.min(endWord.end + padding, videoDurationSeconds),
+          endTime,
           reason: s.reason,
           endsAtSentenceEnd: s.endsAtSentenceEnd
         })

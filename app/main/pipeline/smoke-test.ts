@@ -28,6 +28,11 @@ const execFileAsync = promisify(execFile)
 // during development. Not guessed on your behalf — fill this in before running.
 const TEST_URL = 'https://youtu.be/7s7FvLsJjwc'
 
+// Which ranked candidate segment to render (0 = top-ranked). Bump this to
+// spot-check a different part of the video without waiting on the analyzer
+// to non-deterministically rank a different segment first.
+const SEGMENT_INDEX = 2
+
 async function main(): Promise<void> {
   if (!TEST_URL) {
     throw new Error('Set TEST_URL in app/main/pipeline/smoke-test.ts before running `npm run smoke`.')
@@ -70,7 +75,7 @@ async function main(): Promise<void> {
   const segments = await timed('analyze', () => groqSegmentAnalyzer.analyze(groq, words, durationSeconds))
   console.log(`  -> ${segments.length} candidate segments returned`)
 
-  const topSegment = segments[0]
+  const topSegment = segments[SEGMENT_INDEX] ?? segments[0]
   if (!topSegment) {
     throw new Error('Analyzer returned zero segments')
   }
