@@ -7,7 +7,7 @@
  */
 import 'dotenv/config'
 import { execFile } from 'node:child_process'
-import { mkdir, stat } from 'node:fs/promises'
+import { mkdir, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import Groq from 'groq-sdk'
@@ -95,6 +95,16 @@ async function main(): Promise<void> {
   await timed('render', () =>
     renderClip({ videoPath: segmentVideoPath, title, words: clipWords, durationInSeconds, outputPath })
   )
+
+  // Plain-text companion listing each subtitle word's on-screen timing in
+  // milliseconds, for cross-checking against the rendered video by eye
+  // instead of having to query the DB to spot a mistimed/mistranscribed word.
+  const timingDumpPath = outputPath.replace(/\.mp4$/, '.subtitles.txt')
+  await writeFile(
+    timingDumpPath,
+    clipWords.map((w) => `${Math.round(w.start * 1000)}ms - ${Math.round(w.end * 1000)}ms   ${w.word}`).join('\n')
+  )
+  console.log(`  -> subtitle timing dump: ${timingDumpPath}`)
 
   db.prepare(
     `INSERT INTO clips
