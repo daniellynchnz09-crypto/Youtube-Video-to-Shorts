@@ -195,16 +195,17 @@ const llmSegmentResponseSchema = z.object({
 
 /**
  * Groq occasionally returns a 400 json_validate_failed with an empty
- * failed_generation for this call — observed correlating with a tight
- * remaining-token budget on the free tier's 8000/min cap (most often hit by
- * running several analyses back-to-back within the same rolling minute).
- * groq-sdk's own retry logic doesn't cover this since Groq reports it as a
- * 400 (a client-error status, not one the SDK treats as transient), so it's
- * retried here explicitly with a short backoff instead of failing the whole
- * pipeline run over what's empirically a transient hiccup.
+ * failed_generation for this call — confirmed via response headers to be the
+ * free tier's 8000 tokens/minute cap (seen remaining-tokens as low as 64),
+ * hit by running several analyses back-to-back within the same rolling
+ * minute. groq-sdk's own retry logic doesn't cover this since Groq reports
+ * it as a 400 (a client-error status, not one the SDK treats as transient).
+ * The token bucket needs up to ~60s to refill, so the backoff has to
+ * actually span that — a short few-second retry just fails again against
+ * the same still-tight budget.
  */
 const ANALYZE_MAX_ATTEMPTS = 3
-const ANALYZE_RETRY_BASE_DELAY_MS = 4000
+const ANALYZE_RETRY_BASE_DELAY_MS = 20000
 
 async function requestSegments(
   groq: Groq,

@@ -9,21 +9,49 @@ export interface TranscriptionResult {
 
 /**
  * groq-sdk's shipped types only declare `{ text: string }` for the
- * transcription response, but requesting verbose_json with word-level
- * timestamps actually returns this shape (per Groq's speech-to-text docs).
+ * transcription response, but requesting verbose_json actually returns this
+ * shape (per Groq's speech-to-text docs) — `segments` is present regardless
+ * of timestamp_granularities (it's verbose_json's base level of detail;
+ * `words` is the opt-in addition on top of it), and carries Whisper's own
+ * confidence signals per segment.
  */
+interface WhisperSegment {
+  start: number
+  end: number
+  avg_logprob: number
+  no_speech_prob: number
+}
 interface WhisperVerboseJsonResponse {
   duration: number
   words?: Array<{ word: string; start: number; end: number }>
+  segments?: WhisperSegment[]
 }
+
+/**
+ * Whisper occasionally hallucinates a phrase onto unclear/mumbled audio
+ * instead of transcribing it — a real example: the audio at the very start
+ * of a clip was unintelligible, and Whisper transcribed it as "I think I'm
+ * cracked today," a near-duplicate of a genuine "I think I'm cracked. Only
+ * today though." said ~20s later. Confirmed via segment-level metadata: both
+ * segments had literally identical avg_logprob/no_speech_prob, and the
+ * hallucinated one's avg_logprob (-0.72) was notably worse than a normal,
+ * correctly-transcribed neighboring segment (-0.31) — Whisper's own signal
+ * that it wasn't confident. Words whose segment falls below this threshold
+ * are dropped entirely rather than trusted, since wrong text is worse than
+ * a small transcript gap (both the analyzer and the subtitle renderer
+ * already tolerate gaps).
+ */
+const LOW_CONFIDENCE_AVG_LOGPROB_THRESHOLD = -0.6
 
 export async function transcribeAudio(groq: Groq, audioPath: string): Promise<TranscriptionResult> {
   const response = await groq.audio.transcriptions.create({
     file: createReadStream(audioPath),
     model: 'whisper-large-v3',
     response_format: 'verbose_json',
-    timestamp_granularities: ['word']
-  })
+    // 'segment' must be requested explicitly alongside 'word' — Groq returns
+    // segments: null (no confidence data at all) if only 'word' is asked for.
+    timestamp_granularities: ['word', 'segment']
+  } as Parameters<typeof groq.audio.transcriptions.create>[0])
 
   const data = response as unknown as WhisperVerboseJsonResponse
 
@@ -33,7 +61,14 @@ export async function transcribeAudio(groq: Groq, audioPath: string): Promise<Tr
     end: w.end
   }))
 
-  return { words: normalizeWordTimestamps(words), durationSeconds: data.duration ?? 0 }
+  const confident = dropLowConfidenceWords(words, data.segments ?? [])
+  return { words: normalizeWordTimestamps(confident), durationSeconds: data.duration ?? 0 }
+}
+
+function dropLowConfidenceWords(words: WordTimestamp[], segments: WhisperSegment[]): WordTimestamp[] {
+  const lowConfidenceRanges = segments.filter((s) => s.avg_logprob < LOW_CONFIDENCE_AVG_LOGPROB_THRESHOLD)
+  if (lowConfidenceRanges.length === 0) return words
+  return words.filter((w) => !lowConfidenceRanges.some((r) => w.start >= r.start && w.start < r.end))
 }
 
 /**
