@@ -97,7 +97,8 @@ export const groqSegmentAnalyzer: SegmentAnalyzer = {
         segmentSchema.parse({
           startTime: startWord.start,
           endTime: Math.min(endWord.end + padding, videoDurationSeconds),
-          reason: s.reason
+          reason: s.reason,
+          endsAtSentenceEnd: s.endsAtSentenceEnd
         })
       )
     }

@@ -61,7 +61,7 @@ export async function runPipeline(config: RunPipelineConfig): Promise<PipelineCl
     await downloadSegment(config.url, segment, segmentVideoPath)
 
     const clipWords = wordsInSegment(words, segment)
-    const title = await groqTitleGenerator.generate(groq, clipWords)
+    const title = await groqTitleGenerator.generate(groq, clipWords, segment.endsAtSentenceEnd)
 
     const outputPath = join(paths.outputDir, `${clipId}.mp4`)
     const durationInSeconds = segment.endTime - segment.startTime

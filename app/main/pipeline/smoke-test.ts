@@ -80,7 +80,7 @@ async function main(): Promise<void> {
   await timed('download-segment', () => downloadSegment(TEST_URL, topSegment, segmentVideoPath))
 
   const clipWords = wordsInSegment(words, topSegment)
-  const title = await timed('title', () => groqTitleGenerator.generate(groq, clipWords))
+  const title = await timed('title', () => groqTitleGenerator.generate(groq, clipWords, topSegment.endsAtSentenceEnd))
   console.log(`  -> title: "${title}"`)
 
   const outputPath = join(paths.outputDir, `${clipId}.mp4`)
