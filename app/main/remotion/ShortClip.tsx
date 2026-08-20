@@ -34,6 +34,16 @@ const MAX_VISIBLE_WORDS = 4
 /** A gap at least this long (seconds) between words is treated as a sentence/pause
  * break: subtitles clear rather than jumping ahead to the next sentence early. */
 const PAUSE_BREAK_SECONDS = 0.5
+/**
+ * Whisper's word timestamps are least reliable right after a real silence
+ * (less surrounding speech to anchor the alignment against), so a word
+ * following a pause this long or longer gets a small extra reveal buffer
+ * below — a hedge against it being flagged as "spoken" a touch before the
+ * viewer actually hears it, which would otherwise read as the subtitles
+ * jumping ahead during the pause.
+ */
+const LONG_PAUSE_SECONDS = 1
+const POST_LONG_PAUSE_REVEAL_BUFFER_SECONDS = 0.15
 
 export const ShortClip: React.FC<ShortClipProps> = ({ videoSrc, title, words }) => {
   const frame = useCurrentFrame()
@@ -125,44 +135,64 @@ function endsSentence(word: string): boolean {
   return /[.!?]["')\]]*$/.test(word.trim())
 }
 
+interface SubtitleGroup {
+  words: SubtitleWord[]
+  /** Extra seconds added to this group's first word before it's considered "spoken" — see LONG_PAUSE_SECONDS above. */
+  revealDelaySeconds: number
+}
+
 function buildSubtitleGroups(
   words: SubtitleWord[],
   maxWords = MAX_VISIBLE_WORDS,
   pauseBreakSeconds = PAUSE_BREAK_SECONDS
-): SubtitleWord[][] {
-  const groups: SubtitleWord[][] = []
+): SubtitleGroup[] {
+  const groups: SubtitleGroup[] = []
   let current: SubtitleWord[] = []
+  let prevGroupEnd: number | null = null
+
+  const flush = (): void => {
+    if (current.length === 0) return
+    const gapFromPrevGroup = prevGroupEnd === null ? 0 : current[0]!.start - prevGroupEnd
+    groups.push({
+      words: current,
+      revealDelaySeconds: gapFromPrevGroup > LONG_PAUSE_SECONDS ? POST_LONG_PAUSE_REVEAL_BUFFER_SECONDS : 0
+    })
+    prevGroupEnd = current[current.length - 1]!.end
+    current = []
+  }
+
   for (const word of words) {
     if (current.length > 0) {
       const prevWord = current[current.length - 1]!
       const gap = word.start - prevWord.end
       if (gap > pauseBreakSeconds || current.length >= maxWords || endsSentence(prevWord.word)) {
-        groups.push(current)
-        current = []
+        flush()
       }
     }
     current.push(word)
   }
-  if (current.length > 0) groups.push(current)
+  flush()
   return groups
 }
 
 /**
  * Finds the most recently started group and reveals its words as they're
- * actually spoken (no look-ahead within the group either), clearing once a
- * pause after the group's last word exceeds pauseBreakSeconds.
+ * actually spoken (no look-ahead within the group either, beyond the small
+ * post-pause buffer on a group's first word), clearing once a pause after
+ * the group's last word exceeds pauseBreakSeconds.
  */
 function getVisibleWords(
-  groups: SubtitleWord[][],
+  groups: SubtitleGroup[],
   currentTime: number,
   pauseBreakSeconds = PAUSE_BREAK_SECONDS
 ): SubtitleWord[] {
   for (let g = groups.length - 1; g >= 0; g--) {
     const group = groups[g]!
-    if (group[0]!.start <= currentTime) {
-      const lastWord = group[group.length - 1]!
+    const effectiveFirstStart = group.words[0]!.start + group.revealDelaySeconds
+    if (effectiveFirstStart <= currentTime) {
+      const lastWord = group.words[group.words.length - 1]!
       if (currentTime - lastWord.end > pauseBreakSeconds) return []
-      return group.filter((w) => w.start <= currentTime)
+      return group.words.filter((w, i) => (i === 0 ? effectiveFirstStart : w.start) <= currentTime)
     }
   }
   return []

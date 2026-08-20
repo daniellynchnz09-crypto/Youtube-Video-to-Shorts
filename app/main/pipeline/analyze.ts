@@ -88,7 +88,15 @@ const DANGLING_END_WORDS = new Set([
   "isn't", "wasn't", "aren't", "weren't", "don't", "doesn't", "didn't",
   "can't", "won't", "wouldn't", "couldn't", "shouldn't", "mustn't", "let's"
 ])
-const DANGLING_EXTEND_MAX_WORDS = 12
+const DANGLING_EXTEND_MAX_WORDS = 20
+/**
+ * If forward extension still hasn't found real sentence-ending punctuation
+ * within its own budget (a long run-on stretch with no period), search
+ * backward from the original pick instead — better to end the clip a bit
+ * shorter, on the last word that genuinely does end a sentence, than to
+ * accept a cut that's still incomplete either way.
+ */
+const CLAUSE_END_BACKWARD_SEARCH_WORDS = 25
 
 function stripWord(raw: string): string {
   return raw.toLowerCase().replace(/[^a-z']/g, '')
@@ -115,6 +123,17 @@ function extendPastDanglingWord(
     extended++
   }
   return idx
+}
+
+function findSentenceEnd(words: WordTimestamp[], startIndex: number, originalEndIndex: number): number {
+  const forward = extendPastDanglingWord(words, startIndex, originalEndIndex)
+  if (hasSentenceEndingPunctuation(words[forward]!.word)) return forward
+
+  const earliest = Math.max(startIndex, originalEndIndex - CLAUSE_END_BACKWARD_SEARCH_WORDS)
+  for (let i = originalEndIndex; i > earliest; i--) {
+    if (hasSentenceEndingPunctuation(words[i]!.word)) return i
+  }
+  return forward
 }
 /**
  * Trailing buffer so a clip doesn't audibly cut off mid-word when the last
@@ -247,7 +266,7 @@ export const groqSegmentAnalyzer: SegmentAnalyzer = {
       if (s.endsAtSentenceEnd) {
         endIndex = snapEndIndexToPause(words, startIndex, endIndex)
       }
-      endIndex = extendPastDanglingWord(words, startIndex, endIndex)
+      endIndex = findSentenceEnd(words, startIndex, endIndex)
       const startWord = words[startIndex]
       let endWord = words[endIndex]
       if (!startWord || !endWord || endWord.end <= startWord.start) continue

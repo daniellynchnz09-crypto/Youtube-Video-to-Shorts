@@ -31,7 +31,7 @@ const TEST_URL = 'https://youtu.be/7s7FvLsJjwc'
 // Which ranked candidate segment to render (0 = top-ranked). Bump this to
 // spot-check a different part of the video without waiting on the analyzer
 // to non-deterministically rank a different segment first.
-const SEGMENT_INDEX = 2
+const SEGMENT_INDEX = 3
 
 async function main(): Promise<void> {
   if (!TEST_URL) {
