@@ -64,10 +64,14 @@ function snapEndIndexToPause(words: WordTimestamp[], startIndex: number, endInde
  * attaches punctuation to words (e.g. "chaos!", "control."), and every bad
  * ending observed so far had none. So instead of matching against a word
  * list, push endIndex forward until it lands on a word that actually carries
- * clause-ending punctuation — bounded by MAX_SEGMENT_SECONDS so this can't
- * blow past the duration cap enforced further down. The word list is kept
- * as a secondary check for the rare case where punctuation is missing but
- * the word is still an obvious dangler.
+ * SENTENCE-ending punctuation (. ! ?) — bounded by MAX_SEGMENT_SECONDS so
+ * this can't blow past the duration cap enforced further down. Deliberately
+ * excludes commas/semicolons/colons: those mark a still-continuing sentence,
+ * not a real stopping point, and accepting them produced clips that ended on
+ * something like "...at the yellow orb," which read as an abrupt, random
+ * cutoff despite technically carrying punctuation. The word list is kept as
+ * a secondary check for the rare case where punctuation is missing but the
+ * word is still an obvious dangler.
  */
 const DANGLING_END_WORDS = new Set([
   'a', 'an', 'the', 'and', 'or', 'but', 'so', 'because', 'that', 'which', 'who', 'whose',
@@ -90,8 +94,8 @@ function stripWord(raw: string): string {
   return raw.toLowerCase().replace(/[^a-z']/g, '')
 }
 
-function hasClauseEndingPunctuation(word: string): boolean {
-  return /[.,!?;:]["')\]]*$/.test(word.trim())
+function hasSentenceEndingPunctuation(word: string): boolean {
+  return /[.!?]["')\]]*$/.test(word.trim())
 }
 
 function extendPastDanglingWord(
@@ -104,7 +108,7 @@ function extendPastDanglingWord(
   while (
     idx < words.length - 1 &&
     extended < DANGLING_EXTEND_MAX_WORDS &&
-    (!hasClauseEndingPunctuation(words[idx]!.word) || DANGLING_END_WORDS.has(stripWord(words[idx]!.word))) &&
+    (!hasSentenceEndingPunctuation(words[idx]!.word) || DANGLING_END_WORDS.has(stripWord(words[idx]!.word))) &&
     words[idx + 1]!.end - words[startIndex]!.start <= MAX_SEGMENT_SECONDS
   ) {
     idx++
