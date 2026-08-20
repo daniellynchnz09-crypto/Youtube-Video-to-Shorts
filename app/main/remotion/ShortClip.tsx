@@ -115,7 +115,16 @@ export const ShortClip: React.FC<ShortClipProps> = ({ videoSrc, title, words }) 
  * alongside new ones every time the window advanced by one. Chunking into
  * discrete groups means each word is only ever part of one on-screen group,
  * even if that means a group has fewer than maxWords words in it.
+ *
+ * Also always breaks after a word carrying sentence-ending punctuation
+ * (. ! ?), regardless of pause length or word count — without this, short
+ * back-to-back sentences with little pause between them (e.g. "the hardest.
+ * Right. Crypt") got merged into one group spanning multiple sentences.
  */
+function endsSentence(word: string): boolean {
+  return /[.!?]["')\]]*$/.test(word.trim())
+}
+
 function buildSubtitleGroups(
   words: SubtitleWord[],
   maxWords = MAX_VISIBLE_WORDS,
@@ -125,8 +134,9 @@ function buildSubtitleGroups(
   let current: SubtitleWord[] = []
   for (const word of words) {
     if (current.length > 0) {
-      const gap = word.start - current[current.length - 1]!.end
-      if (gap > pauseBreakSeconds || current.length >= maxWords) {
+      const prevWord = current[current.length - 1]!
+      const gap = word.start - prevWord.end
+      if (gap > pauseBreakSeconds || current.length >= maxWords || endsSentence(prevWord.word)) {
         groups.push(current)
         current = []
       }
