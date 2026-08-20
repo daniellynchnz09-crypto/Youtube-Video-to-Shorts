@@ -39,9 +39,22 @@ interface WhisperVerboseJsonResponse {
  * that it wasn't confident. Words whose segment falls below this threshold
  * are dropped entirely rather than trusted, since wrong text is worse than
  * a small transcript gap (both the analyzer and the subtitle renderer
- * already tolerate gaps).
+ * already tolerate small gaps).
+ *
+ * That last assumption broke on a longer low-confidence stretch: three
+ * consecutive segments spanning ~24s all shared the exact same degraded
+ * avg_logprob/no_speech_prob (same failure signature as above, just
+ * sustained rather than a one-off), and dropping every word in all three
+ * left the clip with a 26-second dead stretch of no subtitles at all despite
+ * the speaker actually talking throughout — reported as subtitles vanishing
+ * for a long block. A short hallucinated phrase is forgivable to drop; a
+ * multi-second on-screen blackout is worse than showing imperfect text, so
+ * dropping is now capped to a single *contiguous* low-confidence stretch of
+ * at most this long — a longer stretch is left alone (kept, warts and all)
+ * rather than blanked out.
  */
 const LOW_CONFIDENCE_AVG_LOGPROB_THRESHOLD = -0.6
+const MAX_DROPPABLE_LOW_CONFIDENCE_SECONDS = 6
 
 export async function transcribeAudio(groq: Groq, audioPath: string): Promise<TranscriptionResult> {
   const response = await groq.audio.transcriptions.create({
@@ -66,9 +79,43 @@ export async function transcribeAudio(groq: Groq, audioPath: string): Promise<Tr
 }
 
 function dropLowConfidenceWords(words: WordTimestamp[], segments: WhisperSegment[]): WordTimestamp[] {
-  const lowConfidenceRanges = segments.filter((s) => s.avg_logprob < LOW_CONFIDENCE_AVG_LOGPROB_THRESHOLD)
+  const lowConfidenceRanges = segments
+    .filter((s) => s.avg_logprob < LOW_CONFIDENCE_AVG_LOGPROB_THRESHOLD)
+    .sort((a, b) => a.start - b.start)
   if (lowConfidenceRanges.length === 0) return words
-  return words.filter((w) => !lowConfidenceRanges.some((r) => w.start >= r.start && w.start < r.end))
+
+  const merged = mergeNearbyRanges(lowConfidenceRanges)
+  const droppableRanges = merged.filter((r) => r.end - r.start <= MAX_DROPPABLE_LOW_CONFIDENCE_SECONDS)
+  if (droppableRanges.length === 0) return words
+
+  return words.filter((w) => !droppableRanges.some((r) => w.start >= r.start && w.start < r.end))
+}
+
+/**
+ * Merges low-confidence ranges that are close together, not just literally
+ * overlapping. The 26s dead-subtitle case turned out to be three separate
+ * low-confidence segments with a few seconds of genuine silence between
+ * each — merging only true overlaps left two of the three individually
+ * under the drop cap while treating them as isolated, when from a viewer's
+ * perspective a cluster of unreliable segments this close together is one
+ * unreliable stretch, not three independent short ones.
+ */
+const RANGE_MERGE_GAP_SECONDS = 5
+
+function mergeNearbyRanges(
+  ranges: Array<{ start: number; end: number }>,
+  gapSeconds = RANGE_MERGE_GAP_SECONDS
+): Array<{ start: number; end: number }> {
+  const merged: Array<{ start: number; end: number }> = []
+  for (const r of ranges) {
+    const last = merged[merged.length - 1]
+    if (last && r.start - last.end <= gapSeconds) {
+      last.end = Math.max(last.end, r.end)
+    } else {
+      merged.push({ start: r.start, end: r.end })
+    }
+  }
+  return merged
 }
 
 /**
