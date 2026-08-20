@@ -168,6 +168,10 @@ const MAX_SEGMENT_SECONDS = 60
  */
 function buildPrompt(words: WordTimestamp[], videoDurationSeconds: number): string {
   const maxSegments = Math.min(50, Math.max(3, Math.round(videoDurationSeconds / 60)))
+  // A flat floor of 3 regardless of video length meant a ~15min video could
+  // return as few candidates as a ~3min one. Scale the floor with maxSegments
+  // instead, so longer videos are expected to surface proportionally more.
+  const minSegments = Math.max(1, Math.floor(maxSegments / 3))
   const parts: string[] = []
   for (let i = 0; i < words.length; i++) {
     const word = words[i]!
@@ -187,7 +191,7 @@ The transcript below has a word-index marker like «140» before every ${MARKER_
 
 Rules:
 - Each segment must correspond to roughly 15-60 seconds of speech.
-- Return between 3 and ${maxSegments} segments, ranked most engaging first.
+- Return between ${minSegments} and ${maxSegments} segments, ranked most engaging first.
 - Segments must not overlap.
 - startWordIndex/endWordIndex should be your best estimate of the actual word position — interpolate between the nearest markers.
 - Critical: pick boundaries that give the clip an obvious beginning and end. startWordIndex must land at (or very near) the start of a complete sentence or thought — not mid-sentence, so the viewer isn't dropped in without context. endWordIndex must land at (or very near) the end of a complete sentence or thought — not cut off mid-idea.
