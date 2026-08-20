@@ -192,6 +192,7 @@ Rules:
 - startWordIndex/endWordIndex should be your best estimate of the actual word position — interpolate between the nearest markers.
 - Critical: pick boundaries that give the clip an obvious beginning and end. startWordIndex must land at (or very near) the start of a complete sentence or thought — not mid-sentence, so the viewer isn't dropped in without context. endWordIndex must land at (or very near) the end of a complete sentence or thought — not cut off mid-idea.
 - Beyond just the boundaries, the segment as a whole should cover one coherent moment or topic, not just start and end cleanly. Watch specifically for a segment that straddles the tail end of one activity/topic and the start of a completely unrelated one (e.g. barely a comment on finishing one thing, then moving straight into commentary on something unrelated) — even with clean sentence boundaries on both ends, a segment like that lacks a real throughline and reads as unfocused. When a candidate segment would straddle that kind of seam, prefer shifting it to sit entirely within whichever side has more substance, rather than spanning both.
+- Critical: if the segment sets up a question, wager, spin/roll, prediction, or any other moment that's clearly about to be resolved, you MUST include that resolution — never end the segment right after the setup line and before the payoff. For example, if the speaker says something like "let's see what this lands on" or "let's find out what I'm doing today," the very next thing they say — the actual result — has to be inside the segment too, even if it means extending endWordIndex past where the setup sentence itself ends. Ending right before a reveal like this is one of the worst outcomes for a clip, regardless of how clean the sentence boundary looks in isolation — check specifically for this pattern before finalizing endWordIndex. If the resolution turns out to be too far away to fit within 60s, don't use that starting point at all rather than presenting an unresolved setup.
 - When estimating endWordIndex, err toward landing a couple words early rather than late. Overshooting past the true end of the thought and into the next topic is worse than ending a beat sooner — the intended sentence/thought must not have any of the following topic's words bleeding into the clip.
 - Watch for false starts and stutters (e.g. "I'd probably be I'd probably be") — a repeated/incomplete phrase followed by a pause usually means the speaker is still collecting their thoughts mid-sentence, not concluding one. Don't let endWordIndex land there. Prefer pushing endWordIndex past the pause to include how the speaker actually finishes the thought, but only if that still fits the 15-60s limit above — if including the real completion would push the segment past 60s, end the segment earlier instead, before the repeated phrase begins, rather than breaking the duration limit.
 - endWordIndex must ALWAYS land at the end of a grammatically complete clause — e.g. never on a conjunction ("and", "so", "because"), a dangling article/pronoun ("that", "a", "this"), or an auxiliary verb with no completion ("are", "is", "was"). This applies equally whether endsAtSentenceEnd is true or false — the two cases are only about what happens right after the clip's own content ends, never about whether the clip's own last clause is finished.
@@ -272,8 +273,21 @@ export const groqSegmentAnalyzer: SegmentAnalyzer = {
       let endWord = words[endIndex]
       if (!startWord || !endWord || endWord.end <= startWord.start) continue
 
-      while (endIndex > startIndex && endWord!.end - startWord.start > MAX_SEGMENT_SECONDS) {
-        endIndex -= 1
+      if (endWord.end - startWord.start > MAX_SEGMENT_SECONDS) {
+        // findSentenceEnd's pick doesn't fit the duration cap. Trim down to
+        // where it does, then search backward from there for the nearest
+        // real sentence end — a plain word-by-word decrement would land
+        // wherever truncation happens to stop, undoing findSentenceEnd's
+        // work and risking an ending like "Bear" (mid dangling phrase).
+        let trimmedIndex = endIndex
+        while (trimmedIndex > startIndex && words[trimmedIndex]!.end - startWord.start > MAX_SEGMENT_SECONDS) {
+          trimmedIndex -= 1
+        }
+        let goodIndex = trimmedIndex
+        while (goodIndex > startIndex && !hasSentenceEndingPunctuation(words[goodIndex]!.word)) {
+          goodIndex -= 1
+        }
+        endIndex = goodIndex > startIndex ? goodIndex : trimmedIndex
         endWord = words[endIndex]
       }
       if (!endWord || endWord.end <= startWord.start) continue

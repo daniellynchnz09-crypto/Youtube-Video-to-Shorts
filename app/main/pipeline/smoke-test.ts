@@ -26,7 +26,7 @@ const execFileAsync = promisify(execFile)
 
 // A short YouTube URL you're comfortable repeatedly re-downloading/re-transcribing
 // during development. Not guessed on your behalf — fill this in before running.
-const TEST_URL = 'https://youtu.be/7s7FvLsJjwc'
+const TEST_URL = 'https://youtu.be/byeEbuPqa7o'
 
 // Which ranked candidate segment to render (0 = top-ranked). Bump this to
 // spot-check a different part of the video without waiting on the analyzer
