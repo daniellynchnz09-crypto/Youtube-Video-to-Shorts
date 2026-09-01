@@ -19,8 +19,13 @@ Chosen over Tauri to keep everything in one language (Node/TypeScript/React) —
 ```
 Electron App (runs only while the user is using it)
   ├─ Main process (Node.js/TypeScript)
-  │    - yt-dlp: downloads only the video segments needed for clips
-  │    - Groq Whisper (whisper-large-v3): word-level transcription
+  │    - yt-dlp: downloads the full source video + a separate downsampled
+  │      audio-only pass (segments for individual clips are cut locally
+  │      afterward, not fetched piecemeal — see the note below)
+  │    - WhisperX, run locally via a Python subprocess (`whisperx-venv/`):
+  │      word-level transcription with dedicated phoneme-based forced
+  │      alignment (see note below on why this replaced Groq's hosted
+  │      Whisper)
   │    - Groq-hosted LLM (openai/gpt-oss-120b): highlight/virality
   │      detection, clip titles, dictionary-aware transcript correction
   │      (free tier — see note below on swapping to Claude later)
@@ -42,7 +47,7 @@ No polling, no job queue, no webhook exposure — UI and worker live in the same
 
 ## Why these providers
 
-- **Transcription — Groq-hosted Whisper (`whisper-large-v3`):** word-level timestamps, free tier covers personal-project volume, fast. (Claude's API is text-only, no audio transcription. Gemini access is capped at 20 prompts/day — too low since each video needs multiple AI calls that scale with clip count.)
+- **Transcription — WhisperX, run locally:** originally Groq-hosted `whisper-large-v3`, switched (2026-08-31) after Groq's word-level timestamps turned out to carry several-second-scale error — not a display-timing nuisance, but bad enough to make a rendered clip cover the wrong stretch of the source video (see [bugs.md](bugs.md) for the full investigation, including two other fix attempts that didn't hold up). WhisperX re-times every word with a dedicated wav2vec2 phoneme-alignment model against the actual audio instead of trusting Whisper's own attention-based timing, and runs entirely on the project's own GPU rather than through an API — Python (via a subprocess, no Node equivalent exists), with its own venv at `whisperx-venv/` (model weights are cached in the user's global Hugging Face/torch cache, not under the project — see the folder structure note below). Side effect: transcription no longer depends on Groq's API or its rate limits at all. (Claude's API is text-only, no audio transcription. Gemini access is capped at 20 prompts/day — too low since each video needs multiple AI calls that scale with clip count.)
 - **Analysis / titles / dictionary correction — Groq-hosted LLM (`openai/gpt-oss-120b`), for now:** free tier, reuses the Groq key already set up for transcription, $0 ongoing cost. Used for: finding the most engaging/viral segments, generating clip titles, and applying custom-dictionary-aware corrections to the transcript. (Model choice as of 2026-08-19 — Groq's hosted lineup changes over time; `app/main/pipeline/analyze.ts`/`titles.ts` are the source of truth if this drifts.)
   - **Future expandability note:** Anthropic's Claude API was the original choice here and remains the natural upgrade path if clip/title quality on the free model isn't good enough — better judgment on "is this segment actually engaging" and better title copywriting, at the cost of paying for API credits separately from a claude.ai subscription (the two are billed independently; there's no free Claude API tier). Swapping providers later should only mean changing the LLM client in this one pipeline step, not a structural rework — worth keeping the analysis/title-generation code isolated behind a small interface for that reason.
 - **Rendering — Remotion, rendered locally:** free for personal use, React-based so the animated title/karaoke-subtitle/emoji-pop-in timing logic is just data-driven React components. Runs on the user's own hardware rather than a paid cloud renderer (e.g. Remotion Lambda).
@@ -67,17 +72,25 @@ Youtube Short Splitter/
   app/
     main/                  # Electron main process
       pipeline/            # download, transcribe, analyze, render steps
+                            #   whisperx_transcribe.py — Python subprocess
+                            #   invoked by transcribe.ts, see "Why these
+                            #   providers" above
       remotion/             # Remotion compositions (background, title,
                             # karaoke subtitles, emoji pop-ins)
       db/                   # SQLite schema/migrations
     renderer/               # React UI (review/edit, project home, dictionary)
   shared/                   # shared TS types/schema between main + renderer
+  whisperx-venv/            # Python venv for WhisperX (gitignored, set up
+                            # separately from `npm install` — see risks below)
 ```
+
+WhisperX's model weights (large-v3 + the wav2vec2 alignment model, several GB) are *not* stored under the project — they're cached in the user's global Hugging Face Hub / torch hub cache (`~/.cache/huggingface`, `~/.cache/torch`), same as any other machine running these tools. A fresh machine re-downloads them there on first transcription.
 
 ## Known risks / constraints
 
 - **Claude API cost:** if/when the LLM steps move off Groq's free tier (see the future-expandability note above), multiple calls per video (segment analysis + per-clip title generation + dictionary-aware correction) become a modest but real ongoing cost.
-- **Groq free-tier rate limits:** 8000 tokens/minute on `openai/gpt-oss-120b` — occasionally hit during rapid back-to-back testing, causing transient `json_validate_failed` errors. Mitigated with retry-with-backoff in `analyze.ts` (see [bugs.md](bugs.md)); not currently a problem at normal (non-testing) usage volume.
+- **Groq free-tier rate limits:** 8000 tokens/minute on `openai/gpt-oss-120b` — occasionally hit during rapid back-to-back testing, causing transient `json_validate_failed` errors. Mitigated with retry-with-backoff in `analyze.ts` only (see [bugs.md](bugs.md)) — `titles.ts` makes the same kind of Groq call with no retry coverage at all, tolerable today since a user is present to manually re-run a failed step, but a real gap once anything runs unattended (see [Unattended job resilience](backlog.md#unattended-job-resilience--needed-before-this-can-run-without-a-user-present) in the backlog). Transcription (`transcribe.ts`) no longer goes through Groq at all as of the WhisperX switch above, so it's no longer exposed to this.
+- **WhisperX is a new, separate local dependency (Python + CUDA), not just another API key.** Needs a real Python install (3.10/3.11 — the machine only had a Microsoft Store Python 3.7 stub, unusable for this), PyTorch matched to both the installed CUDA driver *and* whatever version WhisperX's own dependencies pin (pip will silently swap in a CPU-only torch build to satisfy a version pin unless the CUDA-specific wheel index and exact build tag are both given explicitly — hit this firsthand during setup), and a first-run download of several GB of model weights (large-v3 + the wav2vec2 alignment model) into the user's global Hugging Face/torch cache. All of this lives outside the Node/Electron dependency tree entirely, so it doesn't show up in `npm install` — a fresh machine needs the venv set up separately before transcription works. GPU VRAM is a soft constraint too: verified working on an 8GB card (RTX 4060) by freeing the transcription model before loading the alignment model rather than holding both at once; a much smaller card could still be tight.
 - **Groq free-tier daily quota:** separately, `openai/gpt-oss-120b` also has a 200,000 tokens/day (TPD) cap, hit for the first time 2026-08-20 after an extensive single-session review run (many dozens of analyze/title calls). It's a **rolling 24h window**, not a fixed daily reset — spent tokens only free up individually as they age past 24h, so once exhausted it recovers in a slow trickle rather than all at once, and waiting a few minutes doesn't meaningfully help. No code-level mitigation for this one (unlike the per-minute limit, retrying doesn't fix a genuinely empty budget) — it's a hard stop for further generation until enough of the day's usage ages out, or the account is upgraded to a paid Groq tier.
 - **App only processes while running** — intentional, this was the point of going local.
 - **Electron bundle size/RAM** — heavier than a fully native app; accepted trade-off for staying in one language/stack.

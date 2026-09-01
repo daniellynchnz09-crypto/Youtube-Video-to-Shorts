@@ -4,6 +4,7 @@ import { join } from 'node:path'
 export interface ProjectPaths {
   root: string
   audioPath: string
+  videoPath: string
   segmentDir: string
   outputDir: string
 }
@@ -13,6 +14,7 @@ export async function resolveProjectPaths(baseDir: string, projectId: string): P
   const paths: ProjectPaths = {
     root,
     audioPath: join(root, 'audio.m4a'),
+    videoPath: join(root, 'video.mp4'),
     segmentDir: join(root, 'segments'),
     outputDir: join(root, 'output')
   }

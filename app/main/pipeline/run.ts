@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import Groq from 'groq-sdk'
 import type Database from 'better-sqlite3'
 import { resolveProjectPaths } from './paths.js'
-import { downloadAudio, downloadSegment } from './ytdlp.js'
+import { downloadAudio, downloadFullVideo, extractSegment } from './ytdlp.js'
 import { transcribeAudio } from './transcribe.js'
 import { groqSegmentAnalyzer } from './analyze.js'
 import { groqTitleGenerator } from './titles.js'
@@ -38,8 +38,10 @@ export async function runPipeline(config: RunPipelineConfig): Promise<PipelineCl
     )
     .run(projectId, config.url, config.url, 'transcribing', new Date().toISOString())
 
-  await downloadAudio(config.url, paths.audioPath)
-  const { words, durationSeconds } = await transcribeAudio(groq, paths.audioPath)
+  // Downloaded in parallel — independent fetches (the audio-only pass feeds
+  // transcription, the full video feeds each clip's local segment extraction).
+  await Promise.all([downloadAudio(config.url, paths.audioPath), downloadFullVideo(config.url, paths.videoPath)])
+  const { words, durationSeconds } = await transcribeAudio(paths.audioPath)
 
   config.db.prepare('UPDATE projects SET status = ? WHERE id = ?').run('analyzing', projectId)
   const segments = await groqSegmentAnalyzer.analyze(groq, words, durationSeconds)
@@ -58,7 +60,7 @@ export async function runPipeline(config: RunPipelineConfig): Promise<PipelineCl
   for (const segment of segmentsToRender) {
     const clipId = randomUUID()
     const segmentVideoPath = join(paths.segmentDir, `${clipId}.mp4`)
-    await downloadSegment(config.url, segment, segmentVideoPath)
+    await extractSegment(paths.videoPath, segment, segmentVideoPath)
 
     const clipWords = wordsInSegment(words, segment)
     const title = await groqTitleGenerator.generate(groq, clipWords, segment.endsAtSentenceEnd)

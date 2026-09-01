@@ -261,6 +261,50 @@ async function requestSegments(
   throw lastError
 }
 
+/**
+ * The LLM ranks candidates purely by how engaging each one is on its own,
+ * with no instruction to spread them across the video — observed in
+ * practice (2026-08-28) to reliably converge on the same handful of
+ * "obviously exciting" moments across repeated runs on the same video,
+ * while other well-reasoned candidates elsewhere only surface inconsistently
+ * (seemingly displacing one of that same core set, rather than the model
+ * exploring differently each time). Left alone, a downstream consumer that
+ * takes the top N candidates (once multi-clip generation exists) would keep
+ * regenerating largely the same batch instead of the topic variety a user
+ * actually wants from "give me several shorts from this video."
+ *
+ * Rather than trust prompt-level instructions to self-diversify (an easy
+ * instruction for the model to deprioritize in favor of one more engaging
+ * pick), this greedily reorders the LLM's own ranked list: take the
+ * top-ranked candidate first, then repeatedly take the next-highest-ranked
+ * remaining candidate whose midpoint is far enough from every candidate
+ * already taken. Once every remaining candidate is too close to something
+ * already picked, it falls back to pure engagement order for the rest — so
+ * nothing is ever dropped, just pushed later in the list, which matters
+ * once a downstream consumer caps how many it actually renders.
+ */
+const DIVERSITY_MIN_GAP_SECONDS = 90
+
+function segmentMidpoint(segment: Segment): number {
+  return (segment.startTime + segment.endTime) / 2
+}
+
+function diversifySegments(segments: Segment[]): Segment[] {
+  const remaining = [...segments]
+  const selected: Segment[] = []
+
+  while (remaining.length > 0) {
+    const pickIndex = remaining.findIndex((candidate) =>
+      selected.every((s) => Math.abs(segmentMidpoint(candidate) - segmentMidpoint(s)) >= DIVERSITY_MIN_GAP_SECONDS)
+    )
+    const index = pickIndex === -1 ? 0 : pickIndex
+    selected.push(remaining[index]!)
+    remaining.splice(index, 1)
+  }
+
+  return selected
+}
+
 export const groqSegmentAnalyzer: SegmentAnalyzer = {
   async analyze(groq, words, videoDurationSeconds) {
     const parsed = await requestSegments(groq, words, videoDurationSeconds)
@@ -328,6 +372,6 @@ export const groqSegmentAnalyzer: SegmentAnalyzer = {
       throw new Error('Analyzer produced no usable segments after mapping word indices to timestamps')
     }
 
-    return segments
+    return diversifySegments(segments)
   }
 }

@@ -14,7 +14,7 @@ import Groq from 'groq-sdk'
 import Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import { resolveProjectPaths } from './paths.js'
-import { downloadAudio, downloadSegment } from './ytdlp.js'
+import { downloadAudio, downloadFullVideo, extractSegment } from './ytdlp.js'
 import { transcribeAudio } from './transcribe.js'
 import { groqSegmentAnalyzer } from './analyze.js'
 import { groqTitleGenerator } from './titles.js'
@@ -31,7 +31,7 @@ const TEST_URL = 'https://youtu.be/VIDEO_ID'
 // Which ranked candidate segment to render (0 = top-ranked). Bump this to
 // spot-check a different part of the video without waiting on the analyzer
 // to non-deterministically rank a different segment first.
-const SEGMENT_INDEX = 3
+const SEGMENT_INDEX = 0
 
 async function main(): Promise<void> {
   if (!TEST_URL) {
@@ -67,8 +67,9 @@ async function main(): Promise<void> {
   ).run(projectId, TEST_URL, TEST_URL, 'transcribing', new Date().toISOString())
 
   await timed('download-audio', () => downloadAudio(TEST_URL, paths.audioPath))
+  await timed('download-full-video', () => downloadFullVideo(TEST_URL, paths.videoPath))
 
-  const { words, durationSeconds } = await timed('transcribe', () => transcribeAudio(groq, paths.audioPath))
+  const { words, durationSeconds } = await timed('transcribe', () => transcribeAudio(paths.audioPath))
   console.log(`  -> ${words.length} words, ${durationSeconds.toFixed(1)}s source duration`)
 
   db.prepare('UPDATE projects SET status = ? WHERE id = ?').run('analyzing', projectId)
@@ -82,7 +83,7 @@ async function main(): Promise<void> {
 
   const clipId = randomUUID()
   const segmentVideoPath = join(paths.segmentDir, `${clipId}.mp4`)
-  await timed('download-segment', () => downloadSegment(TEST_URL, topSegment, segmentVideoPath))
+  await timed('extract-segment', () => extractSegment(paths.videoPath, topSegment, segmentVideoPath))
 
   const clipWords = wordsInSegment(words, topSegment)
   const title = await timed('title', () => groqTitleGenerator.generate(groq, clipWords, topSegment.endsAtSentenceEnd))

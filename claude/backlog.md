@@ -40,6 +40,16 @@ Envisioned shape of the feature (not built yet):
 
 Not implemented — no schema, UI, or pipeline wiring exists for this yet. Revisit once the custom dictionary feature itself (build-order step 4) is underway, since this extends the same underlying mechanism.
 
+## Batch segment selection clusters on the same handful of moments
+
+Observed during build-order step 1 review testing (2026-08-28), across roughly 10 separate `analyze()` calls on the same ~16-minute video: a small "core" set of moments (the spinner/recent-tab intro, the a level/a player/a level bit, the ascending-difficulty explanation, the dislikes/skill-issue rant, the closing teaser) came back as a candidate in nearly *every* run, while a genuine "long tail" of other well-reasoned candidates (a hitbox/noclip glitch bit, a hard-demon-layout challenge, a nerfed/grease-spam bit, a blind-jumps level-design critique, a wave-platformer level) only surfaced in *some* runs — seemingly displacing one of the "core" five rather than the model exploring differently each time.
+
+Net effect: once step 2 (multi-clip generation) exists and actually produces a batch of clips per project, regenerating that batch would likely keep returning largely the same handful of shorts every time, with the more varied material surfacing inconsistently — not the topic diversity a user would want from "give me several shorts from this video." The current analyzer prompt (`analyze.ts`) only asks for "most engaging, ranked" with no instruction to spread selections across the video's breadth or across distinct topics, so nothing currently discourages convergence on the same obviously-quotable beats.
+
+Two options worth pursuing together when step 2 is built:
+- **Prompt-level:** explicitly instruct the analyzer to spread picks across the full video and across distinct topics, not rank by engagement alone.
+- **Code-level (more reliable):** apply a diversity filter on top of the LLM's ranked candidate list when actually selecting which ones to render — e.g. greedily enforcing a minimum time-gap or topic-difference between selections — rather than trusting prompt-following alone, since "be diverse" is an easy instruction for the model to deprioritize in favor of an individually more engaging pick.
+
 ## Scheduled publishing to YouTube/TikTok
 
 Direct account linking from the app + scheduling clips to post automatically.
@@ -50,6 +60,17 @@ Direct account linking from the app + scheduling clips to post automatically.
 - A legacy n8n workflow ("Shorts Splitter (placeholder)") from this project's pre-Electron era already exists and loosely maps out the transcription process — check with the user before reusing or removing it when this backlog item is picked up.
 
 ## Web app version
+
+### Unattended job resilience — needed before this can run without a user present
+
+Raised by the user (2026-08-31) after repeatedly hitting Groq's transient rate-limit error (`json_validate_failed`, see [bugs.md](bugs.md)) during manual review sessions: on the current local desktop app, a transient failure is tolerable because the user is sitting right there and can just re-run the step. That assumption breaks completely once this runs as an unattended web app job (or even the local app's future multi-clip batch step, to a lesser extent) — nobody is present to notice a failed run and manually retry it, so a clip that hits a transient hiccup needs to recover on its own.
+
+Current state, checked directly (2026-08-31): only `analyze.ts`'s Groq call has retry-with-backoff (`ANALYZE_MAX_ATTEMPTS`, added after repeatedly hitting the same rate-limit error during testing). `transcribe.ts`'s and `titles.ts`'s Groq calls have **no retry logic at all** — either would currently just throw and abort the whole run. Neither does the yt-dlp download step or the local ffmpeg segment-extraction step (see [bugs.md](bugs.md) for the extraction-accuracy fix that introduced that step) — a flaky network blip or a transient ffmpeg failure kills the run the same way.
+
+Before this runs unattended, needed:
+- **Retry-with-backoff on every external call in the pipeline**, not just the one that happened to get hit hardest during manual testing — generalize `analyze.ts`'s existing pattern (or extract it into a shared helper) to `transcribe.ts`, `titles.ts`, the yt-dlp downloads, and the ffmpeg extraction step.
+- **Job-level retry, not just call-level** — a background worker (per the polling design below) that can re-attempt an entire failed clip (or failed pipeline stage) on its own schedule, not just retry a single API call a few times before giving up. Needs to distinguish transient failures (rate limits, network blips — worth retrying) from permanent ones (a genuinely malformed video URL, a video that's been taken down — retrying forever would just waste quota).
+- **Surfacing partial failure in a multi-clip batch** — one clip failing shouldn't silently drop it from the batch or crash the others; the user (or the job status the web UI shows) needs to see which clips succeeded, which are still retrying, and which gave up permanently.
 
 Full architecture already designed, in case this expands beyond a local single-user tool:
 

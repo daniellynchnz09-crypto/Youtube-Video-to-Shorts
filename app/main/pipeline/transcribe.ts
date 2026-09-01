@@ -1,6 +1,14 @@
-import { createReadStream } from 'node:fs'
-import type Groq from 'groq-sdk'
+import { randomUUID } from 'node:crypto'
+import { readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import type { WordTimestamp } from '../../../shared/types.js'
+
+const execFileAsync = promisify(execFile)
+const __dirname = dirname(fileURLToPath(import.meta.url))
 
 export interface TranscriptionResult {
   words: WordTimestamp[]
@@ -8,114 +16,114 @@ export interface TranscriptionResult {
 }
 
 /**
- * groq-sdk's shipped types only declare `{ text: string }` for the
- * transcription response, but requesting verbose_json actually returns this
- * shape (per Groq's speech-to-text docs) — `segments` is present regardless
- * of timestamp_granularities (it's verbose_json's base level of detail;
- * `words` is the opt-in addition on top of it), and carries Whisper's own
- * confidence signals per segment.
- */
-interface WhisperSegment {
-  start: number
-  end: number
-  avg_logprob: number
-  no_speech_prob: number
-}
-interface WhisperVerboseJsonResponse {
-  duration: number
-  words?: Array<{ word: string; start: number; end: number }>
-  segments?: WhisperSegment[]
-}
-
-/**
- * Whisper occasionally hallucinates a phrase onto unclear/mumbled audio
- * instead of transcribing it — a real example: the audio at the very start
- * of a clip was unintelligible, and Whisper transcribed it as "I think I'm
- * cracked today," a near-duplicate of a genuine "I think I'm cracked. Only
- * today though." said ~20s later. Confirmed via segment-level metadata: both
- * segments had literally identical avg_logprob/no_speech_prob, and the
- * hallucinated one's avg_logprob (-0.72) was notably worse than a normal,
- * correctly-transcribed neighboring segment (-0.31) — Whisper's own signal
- * that it wasn't confident. Words whose segment falls below this threshold
- * are dropped entirely rather than trusted, since wrong text is worse than
- * a small transcript gap (both the analyzer and the subtitle renderer
- * already tolerate small gaps).
+ * Whisper's word-level timestamps — whether from Groq's hosted
+ * whisper-large-v3 (used here previously) or any other vanilla Whisper —
+ * come from the model's own cross-attention weights, and turned out to
+ * carry several-second-scale error on this project's content (confirmed
+ * 2026-08-31: a word's reported position was off by up to ~3.6s in a way
+ * that didn't shrink when the audio handed to Whisper was made much
+ * shorter, ruling out "long audio accumulates drift" as the cause — see
+ * bugs.md for the full trail, including a chunking attempt that didn't
+ * help). That's not just a display-timing annoyance: the analyzer's
+ * segment boundaries and the final clip's actual extraction window both
+ * depend on these timestamps too, so a clip could end up covering the
+ * wrong real stretch of the source video, not just showing laggy
+ * subtitles over the right stretch.
  *
- * That last assumption broke on a longer low-confidence stretch: three
- * consecutive segments spanning ~24s all shared the exact same degraded
- * avg_logprob/no_speech_prob (same failure signature as above, just
- * sustained rather than a one-off), and dropping every word in all three
- * left the clip with a 26-second dead stretch of no subtitles at all despite
- * the speaker actually talking throughout — reported as subtitles vanishing
- * for a long block. A short hallucinated phrase is forgivable to drop; a
- * multi-second on-screen blackout is worse than showing imperfect text, so
- * dropping is now capped to a single *contiguous* low-confidence stretch of
- * at most this long — a longer stretch is left alone (kept, warts and all)
- * rather than blanked out.
+ * WhisperX exists specifically to fix this: it still uses Whisper (via
+ * faster-whisper) for transcription, but then re-times every word with a
+ * dedicated wav2vec2 phoneme-alignment model run directly against the
+ * audio, instead of trusting Whisper's own attention-based timing. Verified
+ * against the same reference case (2026-08-31): the word that was 3.6s off
+ * under Groq's whisper-large-v3 landed within ~0.03s of the tightly-scoped
+ * reference position under WhisperX, on the very same full, unchunked
+ * video.
+ *
+ * This runs as a Python subprocess (`whisperx_transcribe.py`, in a
+ * dedicated venv at `whisperx-venv/`) rather than an in-process Node
+ * library — WhisperX has no Node equivalent, and shelling out mirrors how
+ * yt-dlp is already integrated in this pipeline. It also runs entirely
+ * locally on the user's own GPU rather than through Groq's API, which
+ * incidentally removes this step from the Groq rate-limit/resilience gap
+ * documented in backlog.md — transcription no longer depends on Groq at
+ * all (analysis and title generation still do).
  */
-const LOW_CONFIDENCE_AVG_LOGPROB_THRESHOLD = -0.6
-const MAX_DROPPABLE_LOW_CONFIDENCE_SECONDS = 6
+async function runWhisperX(audioPath: string): Promise<{ words: WordTimestamp[]; durationSeconds: number }> {
+  const projectRoot = join(__dirname, '../../..')
+  const pythonPath = join(projectRoot, 'whisperx-venv', 'Scripts', 'python.exe')
+  const scriptPath = join(__dirname, 'whisperx_transcribe.py')
+  const outputPath = join(tmpdir(), `yss-whisperx-${randomUUID()}.json`)
 
-export async function transcribeAudio(groq: Groq, audioPath: string): Promise<TranscriptionResult> {
-  const response = await groq.audio.transcriptions.create({
-    file: createReadStream(audioPath),
-    model: 'whisper-large-v3',
-    response_format: 'verbose_json',
-    // 'segment' must be requested explicitly alongside 'word' — Groq returns
-    // segments: null (no confidence data at all) if only 'word' is asked for.
-    timestamp_granularities: ['word', 'segment']
-  } as Parameters<typeof groq.audio.transcriptions.create>[0])
-
-  const data = response as unknown as WhisperVerboseJsonResponse
-
-  const words: WordTimestamp[] = (data.words ?? []).map((w) => ({
-    word: w.word,
-    start: w.start,
-    end: w.end
-  }))
-
-  const confident = dropLowConfidenceWords(words, data.segments ?? [])
-  return { words: normalizeWordTimestamps(confident), durationSeconds: data.duration ?? 0 }
+  try {
+    await execFileAsync(pythonPath, [scriptPath, audioPath, outputPath, 'en'], {
+      maxBuffer: 1024 * 1024 * 64
+    })
+    const raw = await readFile(outputPath, 'utf-8')
+    const parsed = JSON.parse(raw) as { words: WordTimestamp[]; duration: number }
+    return { words: parsed.words, durationSeconds: parsed.duration }
+  } finally {
+    await rm(outputPath, { force: true })
+  }
 }
 
-function dropLowConfidenceWords(words: WordTimestamp[], segments: WhisperSegment[]): WordTimestamp[] {
-  const lowConfidenceRanges = segments
-    .filter((s) => s.avg_logprob < LOW_CONFIDENCE_AVG_LOGPROB_THRESHOLD)
-    .sort((a, b) => a.start - b.start)
-  if (lowConfidenceRanges.length === 0) return words
-
-  const merged = mergeNearbyRanges(lowConfidenceRanges)
-  const droppableRanges = merged.filter((r) => r.end - r.start <= MAX_DROPPABLE_LOW_CONFIDENCE_SECONDS)
-  if (droppableRanges.length === 0) return words
-
-  return words.filter((w) => !droppableRanges.some((r) => w.start >= r.start && w.start < r.end))
+export async function transcribeAudio(audioPath: string): Promise<TranscriptionResult> {
+  const { words, durationSeconds } = await runWhisperX(audioPath)
+  const deduplicated = dropDuplicateBursts(words)
+  return { words: normalizeWordTimestamps(deduplicated), durationSeconds }
 }
 
 /**
- * Merges low-confidence ranges that are close together, not just literally
- * overlapping. The 26s dead-subtitle case turned out to be three separate
- * low-confidence segments with a few seconds of genuine silence between
- * each — merging only true overlaps left two of the three individually
- * under the drop cap while treating them as isolated, when from a viewer's
- * perspective a cluster of unreliable segments this close together is one
- * unreliable stretch, not three independent short ones.
+ * Whisper occasionally transcribes the same phrase twice: once as a burst of
+ * near-zero-duration words crammed into a fraction of a second (a real
+ * example: 10 words spanning just 0.28s, ~0.02s each — physically
+ * impossible to actually speak that fast), immediately followed later by
+ * the same phrase again at a normal, correctly-timed pace. Left alone, the
+ * burst copy survives normalizeWordTimestamps() below — its floor-and-push
+ * logic stretches a too-short word out to a minimum plausible duration
+ * rather than removing it, so a crammed run still ends up on screen, just
+ * spread across ~1s instead of ~0.3s: a rapid flash of words with no
+ * matching audio, followed by the same words shown again (correctly) when
+ * actually spoken. This was originally observed and fixed against Groq's
+ * output, but kept here as a defensive check — WhisperX's transcription
+ * step still runs Whisper under the hood, so the same duplication could in
+ * principle still occur, even though the timing itself is now re-derived
+ * by alignment rather than trusted directly.
+ *
+ * This must run on the raw, un-normalized timestamps — normalizeWordTimestamps()
+ * would have already floored away the near-zero-duration signal a burst is
+ * detected by. A *single* near-zero-duration word is left alone here (that
+ * case is a one-off glitch, not a duplicate transcription, and is exactly
+ * what normalizeWordTimestamps()'s floor is for) — this only drops a run of
+ * several such words packed back-to-back, which realistic speech can't
+ * produce (a run this tight implies a rate far beyond human speech).
  */
-const RANGE_MERGE_GAP_SECONDS = 5
+const BURST_WORD_MAX_DURATION_SECONDS = 0.05
+const BURST_MAX_GAP_SECONDS = 0.01
+const BURST_MIN_RUN_LENGTH = 3
 
-function mergeNearbyRanges(
-  ranges: Array<{ start: number; end: number }>,
-  gapSeconds = RANGE_MERGE_GAP_SECONDS
-): Array<{ start: number; end: number }> {
-  const merged: Array<{ start: number; end: number }> = []
-  for (const r of ranges) {
-    const last = merged[merged.length - 1]
-    if (last && r.start - last.end <= gapSeconds) {
-      last.end = Math.max(last.end, r.end)
-    } else {
-      merged.push({ start: r.start, end: r.end })
+function dropDuplicateBursts(words: WordTimestamp[]): WordTimestamp[] {
+  const dropIndices = new Set<number>()
+  let runStart = 0
+
+  const flushRun = (runEnd: number): void => {
+    if (runEnd - runStart >= BURST_MIN_RUN_LENGTH) {
+      for (let i = runStart; i < runEnd; i++) dropIndices.add(i)
     }
   }
-  return merged
+
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i]!
+    const inBurst = word.end - word.start <= BURST_WORD_MAX_DURATION_SECONDS
+    const continuesRun = i === runStart || word.start - words[i - 1]!.end <= BURST_MAX_GAP_SECONDS
+    if (!inBurst || !continuesRun) {
+      flushRun(i)
+      runStart = i
+    }
+    if (!inBurst) runStart = i + 1
+  }
+  flushRun(words.length)
+
+  return words.filter((_, i) => !dropIndices.has(i))
 }
 
 /**
