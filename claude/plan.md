@@ -11,7 +11,7 @@ Step 2 (multi-clip generation + review UI) has not started.
 ## Suggested build order
 
 1. Core pipeline end-to-end for one video → one clip, no UI (prove download → transcribe → analyze → render works). **Done, iterating on quality.**
-2. Multi-clip generation + minimal review UI (list, play, select/reject, export).
+2. Multi-clip generation + minimal review UI — merged multi-pass candidate pool, select which to render, play, select/reject, export (see [spec.md](spec.md#multi-clip-generation--review)).
 3. Full rendering spec fidelity (title reflow, karaoke highlight, emoji pop-ins) + subtitle/title editing.
 4. Custom dictionary feature.
 5. Project home page + persistence/cache-cleanup lifecycle.
