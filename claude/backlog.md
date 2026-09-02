@@ -26,12 +26,6 @@ Idea: once [Title editing](spec.md#editing-in-review) exists in the review UI, c
 
 Idea proposed 2026-08-20, sits alongside the [Custom dictionary](spec.md#editing-in-review) feature but is broader: since this channel plays specific games with their own in-game vocabulary (e.g. the game calling its obstacles "spikes," not "enemies" — a generic word Whisper/the LLM defaults to), a per-game context profile could correct terminology at both the transcription-correction and title-generation stages.
 
-Envisioned shape of the feature (not built yet):
-
-- A GUI section (alongside the custom dictionary UI, likely same build-order step) where the user creates a **game context**: game name, then the app searches the game's wiki/other online sources for background info, plus user-submitted reference images of in-game assets (so clips can eventually be matched against known assets visually) and a terminology mapping list (generic/misheard term → correct in-game term).
-- A project could be tagged with an active game context; the dictionary-aware correction pass and title generation would apply that context's terminology mappings on top of (or instead of) the global custom dictionary when generating output.
-- Longer-term/more speculative piece: visual asset recognition (matching submitted reference images against clip frames) to auto-suggest which game context applies, or to ground terminology decisions in what's actually on screen — bigger scope than the terminology-mapping half, likely a separate later pass.
-
 **the game starter terminology** (given by the user 2026-08-20, since it's the channel's main game — ready to seed once this feature exists):
 - enemies → spikes
 - stage → level
@@ -39,9 +33,29 @@ Envisioned shape of the feature (not built yet):
 - jump ring → orb
 - hard level → demon
 
-Not implemented as a feature — no schema, UI, or asset-recognition wiring exists yet. Revisit once the custom dictionary feature itself (build-order step 4) is underway, since this extends the same underlying mechanism.
+**Partial groundwork already in place (2026-09-02):** the source video's metadata — including its tags — is now fetched and fed into the analyzer/title prompts and the transcription `initial_prompt` hint (see [spec.md](spec.md#title-generation-context)). The uploader's tags are effectively a per-video term list. A hand-maintained game glossary data file is being seeded now (user writing definitions from re-transcribed videos) as the deliberately-simple precursor.
 
-**Partial groundwork already in place (2026-09-02):** the source video's metadata — including its tags — is now fetched and fed into the analyzer/title prompts (see [spec.md](spec.md#title-generation-context)). The uploader's tags are effectively a per-video term list (on the test video: `the game`, `top 1 extreme demon`, `joke level`, `a player`, plus the level name and its common mishearings), so some of what a game-context profile would provide is now coming in for free. A small hardcoded game glossary is planned as the next step after that, ahead of any of the full feature above.
+### Planned design for the full feature (2026-09-03)
+
+Being planned now, to be built once the review GUI exists (build-order step 4+). The manual dictionary UI is the load-bearing part and comes first; wiki auto-population is an accelerator layered on top, since the manual path is needed anyway as the fallback.
+
+**Game identity is a setting, not per-video detection.** This is a single-channel tool (architecture.md), so the game is always the same — set it once (global, or per-channel if that ever matters). Checked 2026-09-03: yt-dlp does *not* expose a game name for these videos anyway — only `categories: ["Gaming"]`; YouTube shows "the game" on the watch page but the extractor doesn't parse it. Per-video game detection is revisited only if the tool is ever pointed at multiple channels/games.
+
+**Two-tier glossary, split by who maintains the truth:**
+
+- **Jargon / mechanics / slang** — *user-defined* (optionally LLM-drafted, user-approved). Examples: "cracked", "skill issue", "sight read", "straight fly", "hold route", "buff/nerf", "free spike". These are community vernacular the wiki doesn't document; they change slowly; and they're the terms that most affect a title's *tone*. This tier is what the hand-seeded glossary covers today.
+- **Levels & players** — *wiki-sourced*, auto-fetched and refreshable. The the game wiki (Fandom, MediaWiki API) is written by people deep in the community and is kept current — difficulty-list placements move, players climb rankings, levels get re-verified. A static user-written entry goes stale; a wiki-sourced entry can be re-pulled. Store each with its source URL + fetch date so it can be refreshed. **Deliberately scoped to levels and players only** — not jargon, where the disambiguation problem is worst ("Unknown"/"Wave"/"Silent" are both words and proper nouns) and the wiki has least to say.
+
+**Unknown-term detection** (what populates the "needs a definition" list):
+- proper-noun-ish tokens — capitalized mid-sentence, or appearing in the video's tags / **chapter titles** (creator timestamps; yt-dlp *does* expose these and they carry correct level-name spellings — worth wiring into the metadata hint even before the full feature) — that aren't already in the glossary;
+- plus a per-transcript LLM pass: "list the game-specific jargon and proper nouns here that aren't in this glossary" — essentially what `scratch/source-transcripts/CANDIDATE-TERMS.md` was produced by hand.
+- The GUI presents these grouped by category (people / levels / mechanics / …), same shape as that markdown doc, and the user resolves each: accept a wiki/LLM draft, edit it, add spelling variants, or dismiss.
+
+**Wiki lookup mechanics:** search the term → pick the right page (LLM-assisted disambiguation, using the transcript sentence as context) → LLM compresses the article prose into a short usable definition → present for user approval. Wiki content also grounds the LLM so it doesn't hallucinate specifics (who verified what, exact list placement).
+
+**Longer-term / more speculative:** user-submitted reference images of in-game assets + visual asset recognition (matching them against clip frames) to ground terminology in what's actually on screen, or auto-detect which game context applies. Bigger scope than the terminology half; a separate later pass.
+
+Not implemented — no schema, UI, wiki client, or asset-recognition wiring exists yet.
 
 ## Batch segment selection clusters on the same handful of moments
 
