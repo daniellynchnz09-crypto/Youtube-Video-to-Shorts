@@ -8,9 +8,10 @@ Observed during build-order step 1 testing (2026-08-19): Whisper's transcription
 
 Since every video run through this tool comes from a single channel/single speaker, there may be a way to adapt transcription specifically to that one voice rather than relying on generic Whisper accuracy:
 
-- **Not available:** Groq's hosted `whisper-large-v3` can't be fine-tuned — there's no per-speaker fine-tuning API on the free-tier hosted model.
-- **Worth exploring instead:** Whisper's `prompt` parameter (supported by Groq's transcription endpoint) can bias output toward known vocabulary/phrasing — an accumulated channel-specific glossary (built up via the [Custom dictionary](spec.md#editing-in-review) feature, or a separate running list of the creator's common phrases/terms) could be fed in as a prompt hint on every transcription call, which may reduce misheard words without needing real fine-tuning.
-- Would need testing to see how much this actually moves accuracy before committing engineering time to it.
+- **Not available:** local WhisperX / faster-whisper `large-v3` can't be practically fine-tuned per-speaker here either.
+- **Partly done (2026-09-02):** Whisper's `initial_prompt` (via WhisperX's `asr_options`) is now fed the source video's title + description on every transcription — see [`buildTranscriptionHint`](../app/main/pipeline/videoContext.ts) and [spec.md](spec.md#title-generation-context). This biases spelling of proper nouns the model would otherwise mangle (the level name, creators). It's a soft bias with a ~224-token budget, so it's not a full fix.
+- **Still worth exploring:** feeding an accumulated channel-specific glossary (from the [Custom dictionary](spec.md#editing-in-review) feature, or a running list of the creator's common phrases) into that same `initial_prompt` — a bigger, curated term list than what one video's metadata provides. The raw video *tags* are deliberately excluded from the current hint because they contain misspellings; a curated glossary wouldn't have that problem.
+- Speaker accent/style inaccuracy (as opposed to unknown-vocabulary inaccuracy) is not addressed by any of the above and would need a different approach.
 
 ## Learn from user title edits
 

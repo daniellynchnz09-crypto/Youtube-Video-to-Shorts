@@ -5,7 +5,8 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import type { WordTimestamp } from '../../../shared/types.js'
+import type { VideoMetadata, WordTimestamp } from '../../../shared/types.js'
+import { buildTranscriptionHint } from './videoContext.js'
 
 const execFileAsync = promisify(execFile)
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -47,15 +48,22 @@ export interface TranscriptionResult {
  * incidentally removes this step from the Groq rate-limit/resilience gap
  * documented in backlog.md — transcription no longer depends on Groq at
  * all (analysis and title generation still do).
+ *
+ * `hint` is passed through to Whisper's `initial_prompt` (see
+ * buildTranscriptionHint) to bias spelling of proper nouns the model would
+ * otherwise mangle. Empty string = no hint.
  */
-async function runWhisperX(audioPath: string): Promise<{ words: WordTimestamp[]; durationSeconds: number }> {
+async function runWhisperX(
+  audioPath: string,
+  hint: string
+): Promise<{ words: WordTimestamp[]; durationSeconds: number }> {
   const projectRoot = join(__dirname, '../../..')
   const pythonPath = join(projectRoot, 'whisperx-venv', 'Scripts', 'python.exe')
   const scriptPath = join(__dirname, 'whisperx_transcribe.py')
   const outputPath = join(tmpdir(), `yss-whisperx-${randomUUID()}.json`)
 
   try {
-    await execFileAsync(pythonPath, [scriptPath, audioPath, outputPath, 'en'], {
+    await execFileAsync(pythonPath, [scriptPath, audioPath, outputPath, 'en', hint], {
       maxBuffer: 1024 * 1024 * 64
     })
     const raw = await readFile(outputPath, 'utf-8')
@@ -66,8 +74,11 @@ async function runWhisperX(audioPath: string): Promise<{ words: WordTimestamp[];
   }
 }
 
-export async function transcribeAudio(audioPath: string): Promise<TranscriptionResult> {
-  const { words, durationSeconds } = await runWhisperX(audioPath)
+export async function transcribeAudio(
+  audioPath: string,
+  metadata?: VideoMetadata
+): Promise<TranscriptionResult> {
+  const { words, durationSeconds } = await runWhisperX(audioPath, buildTranscriptionHint(metadata))
   const deduplicated = dropDuplicateBursts(words)
   return { words: normalizeWordTimestamps(deduplicated), durationSeconds }
 }

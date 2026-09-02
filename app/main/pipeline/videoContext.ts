@@ -32,3 +32,42 @@ export function formatVideoMetadata(metadata: VideoMetadata | undefined): string
 
   return lines.join('\n')
 }
+
+/**
+ * Builds a Whisper `initial_prompt` hint from the video metadata, to bias
+ * transcription toward the correct spelling of proper nouns it would
+ * otherwise mangle (level names, creator names, game jargon it's never
+ * heard — a real case: "a level" came out as "a level"/"a level", "a player"
+ * as "a player"). `initial_prompt` is a soft bias with roughly a
+ * 224-token budget, and Whisper does best with natural prose that matches
+ * the expected speaking style, so this uses the uploader's title +
+ * description (correct casing and spelling) and deliberately NOT the raw
+ * tag list — the tags on real videos contain misspellings ("a level",
+ * "achnes") that would bias transcription the wrong way.
+ *
+ * The hint MUST end on a complete sentence. Whisper treats the prompt as
+ * text preceding the audio and will "continue" a dangling clause — observed
+ * 2026-09-02: a 600-char cut landed on "...but all", and the transcript came
+ * back opening with a hallucinated "the time it was not verified by a player,
+ * so I decided to make this video about it." that was never spoken. Trimming
+ * back to the last sentence-ending punctuation makes the prompt read as
+ * finished text rather than a lead-in. Returns '' when there's nothing usable.
+ */
+const MAX_HINT_CHARS = 700
+
+export function buildTranscriptionHint(metadata: VideoMetadata | undefined): string {
+  if (!metadata) return ''
+  const title = metadata.title.trim()
+  const description = metadata.description.trim()
+
+  let hint = [title, description].filter(Boolean).join('. ')
+  if (!hint) return ''
+
+  if (hint.length > MAX_HINT_CHARS) hint = hint.slice(0, MAX_HINT_CHARS)
+
+  const lastSentenceEnd = Math.max(hint.lastIndexOf('.'), hint.lastIndexOf('!'), hint.lastIndexOf('?'))
+  if (lastSentenceEnd >= 40) hint = hint.slice(0, lastSentenceEnd + 1)
+  else if (!/[.!?]$/.test(hint)) hint += '.'
+
+  return hint.trim()
+}

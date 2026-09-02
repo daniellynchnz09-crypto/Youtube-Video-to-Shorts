@@ -46,7 +46,7 @@ export async function runPipeline(config: RunPipelineConfig): Promise<PipelineCl
     downloadFullVideo(config.url, paths.videoPath),
     fetchVideoMetadata(config.url)
   ])
-  const { words, durationSeconds } = await transcribeAudio(paths.audioPath)
+  const { words, durationSeconds } = await transcribeAudio(paths.audioPath, metadata)
 
   config.db.prepare('UPDATE projects SET status = ? WHERE id = ?').run('analyzing', projectId)
   const segments = await groqSegmentAnalyzer.analyze(groq, words, durationSeconds, metadata)

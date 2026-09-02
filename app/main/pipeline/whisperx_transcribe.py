@@ -15,7 +15,13 @@ wav2vec2 phoneme-alignment model against the actual audio, a fundamentally
 different (and much more accurate) approach to word timing than Whisper's
 own attention weights.
 
-Usage: python whisperx_transcribe.py <audio_path> <output_json_path> [language]
+The optional `initial_prompt` biases decoding toward expected vocabulary and
+spellings — used here to feed the source video's title/description so proper
+nouns (level names, creators, game jargon) come out spelled correctly instead
+of phonetically mangled. It's a soft bias with a ~224-token budget, not a
+guarantee.
+
+Usage: python whisperx_transcribe.py <audio_path> <output_json_path> [language] [initial_prompt]
 """
 import sys
 import json
@@ -27,12 +33,16 @@ import whisperx
 
 def main() -> None:
     if len(sys.argv) < 3:
-        print("usage: whisperx_transcribe.py <audio_path> <output_json_path> [language]", file=sys.stderr)
+        print(
+            "usage: whisperx_transcribe.py <audio_path> <output_json_path> [language] [initial_prompt]",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     audio_path = sys.argv[1]
     output_path = sys.argv[2]
     language = sys.argv[3] if len(sys.argv) > 3 else "en"
+    initial_prompt = sys.argv[4].strip() if len(sys.argv) > 4 and sys.argv[4].strip() else None
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # float16 on GPU (this project's RTX 4060 has 8GB VRAM — comfortable for
@@ -42,7 +52,12 @@ def main() -> None:
 
     audio = whisperx.load_audio(audio_path)
 
-    model = whisperx.load_model("large-v3", device, compute_type=compute_type, language=language)
+    # initial_prompt goes through asr_options — faster-whisper feeds it to the
+    # decoder as leading context to bias vocabulary/spelling (see module docstring).
+    asr_options = {"initial_prompt": initial_prompt} if initial_prompt else None
+    model = whisperx.load_model(
+        "large-v3", device, compute_type=compute_type, language=language, asr_options=asr_options
+    )
     result = model.transcribe(audio, batch_size=16)
 
     # Free the transcription model before loading the alignment model —
