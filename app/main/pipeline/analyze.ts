@@ -1,7 +1,8 @@
 import type Groq from 'groq-sdk'
 import { z } from 'zod'
 import { segmentSchema, type Segment } from '../../../shared/schemas.js'
-import type { WordTimestamp } from '../../../shared/types.js'
+import type { VideoMetadata, WordTimestamp } from '../../../shared/types.js'
+import { formatVideoMetadata } from './videoContext.js'
 
 /**
  * The analysis step behind an interface, per Claude.md's expandability note:
@@ -9,7 +10,12 @@ import type { WordTimestamp } from '../../../shared/types.js'
  * implementation of this interface, not touching the rest of the pipeline.
  */
 export interface SegmentAnalyzer {
-  analyze(groq: Groq, words: WordTimestamp[], videoDurationSeconds: number): Promise<Segment[]>
+  analyze(
+    groq: Groq,
+    words: WordTimestamp[],
+    videoDurationSeconds: number,
+    metadata?: VideoMetadata
+  ): Promise<Segment[]>
 }
 
 /**
@@ -166,7 +172,11 @@ const MAX_SEGMENT_SECONDS = 60
  * `words` array afterward, so a little index imprecision from the sparse
  * markers just means a few words of slop at a clip boundary, not wrong data.
  */
-function buildPrompt(words: WordTimestamp[], videoDurationSeconds: number): string {
+function buildPrompt(
+  words: WordTimestamp[],
+  videoDurationSeconds: number,
+  metadata: VideoMetadata | undefined
+): string {
   const maxSegments = Math.min(50, Math.max(3, Math.round(videoDurationSeconds / 60)))
   // A flat floor of 3 regardless of video length meant a ~15min video could
   // return as few candidates as a ~3min one. Scale the floor with maxSegments
@@ -185,10 +195,15 @@ function buildPrompt(words: WordTimestamp[], videoDurationSeconds: number): stri
   }
   const transcript = parts.join(' ')
 
+  const metadataBlock = formatVideoMetadata(metadata)
+  const contextSection = metadataBlock
+    ? `\nContext — metadata from the source video, to help you understand references, in-jokes, and terminology in the transcript (the speech is a live reaction to something on screen the transcript doesn't describe):\n${metadataBlock}\n`
+    : ''
+
   return `You are selecting the most engaging, viral-worthy segments from a video transcript to turn into vertical short-form clips.
 
 The transcript below has a word-index marker like «140» before every ${MARKER_INTERVAL}th word, so you can reference positions without counting every word yourself. It also has inline markers like ‖pause 1.3s‖ wherever the speaker paused that long before their next word.
-
+${contextSection}
 Rules:
 - Each segment must correspond to roughly 15-60 seconds of speech.
 - Return between ${minSegments} and ${maxSegments} segments, ranked most engaging first.
@@ -239,14 +254,15 @@ const ANALYZE_RETRY_BASE_DELAY_MS = 20000
 async function requestSegments(
   groq: Groq,
   words: WordTimestamp[],
-  videoDurationSeconds: number
+  videoDurationSeconds: number,
+  metadata: VideoMetadata | undefined
 ): Promise<z.infer<typeof llmSegmentResponseSchema>> {
   let lastError: unknown
   for (let attempt = 1; attempt <= ANALYZE_MAX_ATTEMPTS; attempt++) {
     try {
       const completion = await groq.chat.completions.create({
         model: 'openai/gpt-oss-120b',
-        messages: [{ role: 'user', content: buildPrompt(words, videoDurationSeconds) }],
+        messages: [{ role: 'user', content: buildPrompt(words, videoDurationSeconds, metadata) }],
         response_format: { type: 'json_object' }
       })
       const raw = completion.choices[0]?.message?.content ?? '{}'
@@ -306,8 +322,8 @@ function diversifySegments(segments: Segment[]): Segment[] {
 }
 
 export const groqSegmentAnalyzer: SegmentAnalyzer = {
-  async analyze(groq, words, videoDurationSeconds) {
-    const parsed = await requestSegments(groq, words, videoDurationSeconds)
+  async analyze(groq, words, videoDurationSeconds, metadata) {
+    const parsed = await requestSegments(groq, words, videoDurationSeconds, metadata)
 
     const segments: Segment[] = []
     for (const s of parsed.segments) {

@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import ytdlp from 'yt-dlp-exec'
+import type { VideoMetadata } from '../../../shared/types.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -22,6 +23,31 @@ export async function downloadAudio(url: string, outPath: string): Promise<void>
     noPlaylist: true,
     postprocessorArgs: 'ffmpeg:-ar 16000 -ac 1 -b:a 24k'
   } as Parameters<typeof ytdlp>[1])
+}
+
+/**
+ * Fetches the source video's metadata (no media download) so the analyzer
+ * and title generator have context the transcript alone doesn't carry — the
+ * uploader's own title/description usually name the level, creators, and
+ * difficulty being discussed, and the tags are a useful raw term list for
+ * seeding a game glossary later. `dumpSingleJson` makes yt-dlp print the
+ * full info dict, which yt-dlp-exec parses to an object.
+ */
+export async function fetchVideoMetadata(url: string): Promise<VideoMetadata> {
+  const info = (await ytdlp(url, {
+    dumpSingleJson: true,
+    skipDownload: true,
+    noPlaylist: true
+  } as Parameters<typeof ytdlp>[1])) as unknown as {
+    title?: string
+    description?: string
+    tags?: string[]
+  }
+  return {
+    title: info.title ?? '',
+    description: info.description ?? '',
+    tags: Array.isArray(info.tags) ? info.tags : []
+  }
 }
 
 export async function downloadFullVideo(url: string, outPath: string): Promise<void> {

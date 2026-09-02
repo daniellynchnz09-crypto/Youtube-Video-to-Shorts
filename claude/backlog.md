@@ -38,7 +38,9 @@ Envisioned shape of the feature (not built yet):
 - jump ring → orb
 - hard level → demon
 
-Not implemented — no schema, UI, or pipeline wiring exists for this yet. Revisit once the custom dictionary feature itself (build-order step 4) is underway, since this extends the same underlying mechanism.
+Not implemented as a feature — no schema, UI, or asset-recognition wiring exists yet. Revisit once the custom dictionary feature itself (build-order step 4) is underway, since this extends the same underlying mechanism.
+
+**Partial groundwork already in place (2026-09-02):** the source video's metadata — including its tags — is now fetched and fed into the analyzer/title prompts (see [spec.md](spec.md#title-generation-context)). The uploader's tags are effectively a per-video term list (on the test video: `the game`, `top 1 extreme demon`, `joke level`, `a player`, plus the level name and its common mishearings), so some of what a game-context profile would provide is now coming in for free. A small hardcoded game glossary is planned as the next step after that, ahead of any of the full feature above.
 
 ## Batch segment selection clusters on the same handful of moments
 

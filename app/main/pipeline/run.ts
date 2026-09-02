@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import Groq from 'groq-sdk'
 import type Database from 'better-sqlite3'
 import { resolveProjectPaths } from './paths.js'
-import { downloadAudio, downloadFullVideo, extractSegment } from './ytdlp.js'
+import { downloadAudio, downloadFullVideo, extractSegment, fetchVideoMetadata } from './ytdlp.js'
 import { transcribeAudio } from './transcribe.js'
 import { groqSegmentAnalyzer } from './analyze.js'
 import { groqTitleGenerator } from './titles.js'
@@ -38,13 +38,18 @@ export async function runPipeline(config: RunPipelineConfig): Promise<PipelineCl
     )
     .run(projectId, config.url, config.url, 'transcribing', new Date().toISOString())
 
-  // Downloaded in parallel — independent fetches (the audio-only pass feeds
-  // transcription, the full video feeds each clip's local segment extraction).
-  await Promise.all([downloadAudio(config.url, paths.audioPath), downloadFullVideo(config.url, paths.videoPath)])
+  // Fetched in parallel — independent (the audio-only pass feeds
+  // transcription, the full video feeds each clip's local segment
+  // extraction, the metadata feeds the analyzer/title prompts).
+  const [, , metadata] = await Promise.all([
+    downloadAudio(config.url, paths.audioPath),
+    downloadFullVideo(config.url, paths.videoPath),
+    fetchVideoMetadata(config.url)
+  ])
   const { words, durationSeconds } = await transcribeAudio(paths.audioPath)
 
   config.db.prepare('UPDATE projects SET status = ? WHERE id = ?').run('analyzing', projectId)
-  const segments = await groqSegmentAnalyzer.analyze(groq, words, durationSeconds)
+  const segments = await groqSegmentAnalyzer.analyze(groq, words, durationSeconds, metadata)
 
   const segmentsToRender = config.maxClips ? segments.slice(0, config.maxClips) : segments
   const results: PipelineClipResult[] = []
@@ -63,7 +68,7 @@ export async function runPipeline(config: RunPipelineConfig): Promise<PipelineCl
     await extractSegment(paths.videoPath, segment, segmentVideoPath)
 
     const clipWords = wordsInSegment(words, segment)
-    const title = await groqTitleGenerator.generate(groq, clipWords, segment.endsAtSentenceEnd)
+    const title = await groqTitleGenerator.generate(groq, clipWords, segment.endsAtSentenceEnd, metadata)
 
     const outputPath = join(paths.outputDir, `${clipId}.mp4`)
     const durationInSeconds = segment.endTime - segment.startTime

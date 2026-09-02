@@ -5,15 +5,15 @@ Part of the [YouTube Short Splitter](../Claude.md) doc set. See [architecture.md
 ## Pipeline (URL → finished clips)
 
 1. **Input:** user pastes a YouTube URL into the app.
-2. **Resolve:** app locates/validates the video.
+2. **Resolve:** app locates/validates the video, and fetches its **metadata** — the uploader's own title, description, and tags (yt-dlp, no media download). This is fed into the analyzer and title prompts as context: the transcript is a live reaction to on-screen gameplay it can't describe, and the uploader's own text usually carries the correct level/creator names, difficulty framing, and terminology the transcription mishears (a real case: the level "a level" was transcribed as "a level"/"a level" — the correct spelling was right there in the video title). See [Title generation](#title-generation-context).
 3. **Transcribe (audio-only pass):** yt-dlp downloads just the audio track (small, downsampled), WhisperX transcribes it locally with word-level timestamps re-timed by a dedicated forced-alignment pass — much finer than a normal subtitle file, and far more accurate than vanilla Whisper's attention-based timing (see [architecture.md](architecture.md#why-these-providers)).
-4. **Analyze:** the LLM analyzes the transcript to find the most engaging/potentially-viral segments.
+4. **Analyze:** the LLM analyzes the transcript (plus the video metadata from step 2) to find the most engaging/potentially-viral segments.
    - Each segment: **min 15s, max 60s**.
    - **Min 3, max 50 segments per video**, scaled to video length.
    - **Candidate pool, not a one-shot batch:** the analyzer is run **2–3 times** and the results merged. A single pass reliably surfaces the same core handful of moments while genuinely varied material only shows up in *some* runs, so one pass alone would keep regenerating a near-identical batch (see [backlog.md](backlog.md#batch-segment-selection-clusters-on-the-same-handful-of-moments)). Merged candidates are deduped by time overlap and stored **unrendered**.
 5. **Video download:** yt-dlp fetches the full source video once (in parallel with the audio pass). Individual clip ranges are later cut from this local copy frame-accurately with ffmpeg, not re-fetched per clip. *(Previously fetched only the used ranges via yt-dlp `--download-sections`; replaced after its byte-offset seek estimate drifted up to ~15s on progressive-HTTP formats — see [bugs.md](bugs.md).)*
 6. **Review & select:** the candidate pool appears in the app as an unrendered list, each entry showing the analyzer's reasoning. The user picks which candidates become clips, and can request more candidate passes to widen the pool. See [Multi-clip generation & review](#multi-clip-generation--review).
-7. **Title generation:** per selected clip, the LLM generates a title — explains the clip while aiming to be clickable/attention-grabbing.
+7. **Title generation:** per selected clip, the LLM generates a title (from the clip's transcript slice + the video metadata from step 2) — explains the clip while aiming to be clickable/attention-grabbing. See [Title generation context](#title-generation-context).
 8. **Render (Remotion):** each selected clip is composited per the [Rendering spec](#rendering-spec) below.
 9. **Edit:** rendered clips appear in the app for playback and editing (see [Editing](#editing-in-review)).
 
@@ -35,6 +35,18 @@ The generator is deliberately split into a cheap **candidate** stage and an expe
 6. Only ticked candidates proceed to title generation + render. Un-ticked candidates stay in the pool (a project can be reopened and more of them rendered later).
 
 **Data model impact:** clips need to exist before they're rendered. Either a separate `candidates` table, or `clips` rows with a `render_status` of `candidate` / `rendering` / `done` and nullable `file_path` / `title` until rendered. See [architecture.md](architecture.md#data-model-local-sqlite).
+
+## Title generation context
+
+The clip's transcript slice alone is a weak basis for a title: the speech is a live reaction to on-screen gameplay the transcript doesn't describe, it leans on game-specific jargon, and the transcription mangles proper nouns it's never heard (level and creator names especially). Layers of context, cheapest first:
+
+1. **Source video metadata (done).** The uploader's own title, description, and tags, fetched once per project (yt-dlp, no media download — [`fetchVideoMetadata`](../app/main/pipeline/ytdlp.ts)), formatted by [`videoContext.ts`](../app/main/pipeline/videoContext.ts) and passed into both the analyzer and title prompts. This alone fixed proper nouns (transcribed "a level"/"a player" → correct "a level"/"a player" from the title/tags) and surfaced framing the clip lacked ("joke level", "top 70"). The tags are also a useful raw term list for seeding the game glossary below.
+2. **Simple game glossary (next).** A small hardcoded the game term map (the starter list in [backlog.md](backlog.md#game-specific-context-terminology--asset-recognition): spikes, wave, orb, demon, …) injected into the title + analyzer prompts. A deliberately minimal early slice of the full [custom dictionary](#editing-in-review) feature — no schema or UI, just a constant — shipped before the dictionary UI so short quality can be judged with it in place.
+3. **Per-video context brief (experimental).** One extra LLM call over the full transcript + metadata, producing 2–3 sentences (what the video is, who's speaking, what's shown, key names), cached on the project and prepended to every per-clip title call. Compact and amortized rather than re-sending the whole transcript per clip. To be trialled after the glossary; kept only if it moves title quality noticeably.
+4. **Model quality.** Titles run on Groq's `openai/gpt-oss-120b` (free). The title step is tiny (one short call per clip) and isolated behind the `TitleGenerator` interface, so moving just this step to the Claude API — while analysis stays on Groq — is a small, low-cost upgrade if the above context still isn't enough. See [architecture.md](architecture.md#why-these-providers).
+5. **On-screen analysis (backlog).** A vision pass over clip frames to ground titles in what's actually shown — the biggest lift, tracked under [Game-specific context](backlog.md#game-specific-context-terminology--asset-recognition).
+
+Title imperfection on the free model is expected and is **not** treated as a bug during clip review (see [bugs.md](bugs.md)) — review feedback focuses on segment boundaries, timing, and selection until the glossary and on-screen analysis exist.
 
 ## Rendering spec
 

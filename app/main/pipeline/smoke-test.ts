@@ -14,7 +14,7 @@ import Groq from 'groq-sdk'
 import Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import { resolveProjectPaths } from './paths.js'
-import { downloadAudio, downloadFullVideo, extractSegment } from './ytdlp.js'
+import { downloadAudio, downloadFullVideo, extractSegment, fetchVideoMetadata } from './ytdlp.js'
 import { transcribeAudio } from './transcribe.js'
 import { groqSegmentAnalyzer } from './analyze.js'
 import { groqTitleGenerator } from './titles.js'
@@ -68,12 +68,16 @@ async function main(): Promise<void> {
 
   await timed('download-audio', () => downloadAudio(TEST_URL, paths.audioPath))
   await timed('download-full-video', () => downloadFullVideo(TEST_URL, paths.videoPath))
+  const metadata = await timed('fetch-metadata', () => fetchVideoMetadata(TEST_URL))
+  console.log(`  -> "${metadata.title}", ${metadata.tags.length} tags`)
 
   const { words, durationSeconds } = await timed('transcribe', () => transcribeAudio(paths.audioPath))
   console.log(`  -> ${words.length} words, ${durationSeconds.toFixed(1)}s source duration`)
 
   db.prepare('UPDATE projects SET status = ? WHERE id = ?').run('analyzing', projectId)
-  const segments = await timed('analyze', () => groqSegmentAnalyzer.analyze(groq, words, durationSeconds))
+  const segments = await timed('analyze', () =>
+    groqSegmentAnalyzer.analyze(groq, words, durationSeconds, metadata)
+  )
   console.log(`  -> ${segments.length} candidate segments returned`)
 
   const topSegment = segments[SEGMENT_INDEX] ?? segments[0]
@@ -86,7 +90,9 @@ async function main(): Promise<void> {
   await timed('extract-segment', () => extractSegment(paths.videoPath, topSegment, segmentVideoPath))
 
   const clipWords = wordsInSegment(words, topSegment)
-  const title = await timed('title', () => groqTitleGenerator.generate(groq, clipWords, topSegment.endsAtSentenceEnd))
+  const title = await timed('title', () =>
+    groqTitleGenerator.generate(groq, clipWords, topSegment.endsAtSentenceEnd, metadata)
+  )
   console.log(`  -> title: "${title}"`)
 
   const outputPath = join(paths.outputDir, `${clipId}.mp4`)

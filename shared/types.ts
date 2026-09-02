@@ -11,6 +11,19 @@ export interface Project {
 export type ClipRenderStatus = 'pending' | 'rendering' | 'done' | 'failed'
 export type ClipReviewStatus = 'unreviewed' | 'selected' | 'rejected'
 
+/**
+ * The source YouTube video's own metadata, fed into the analyzer and title
+ * prompts as context. The transcript alone often can't convey what's on
+ * screen or what a reference means (this channel plays the game, with
+ * its own vocabulary); the uploader's title/description/tags usually carry
+ * the correct proper nouns and framing.
+ */
+export interface VideoMetadata {
+  title: string
+  description: string
+  tags: string[]
+}
+
 export interface WordTimestamp {
   word: string
   /** seconds, relative to the clip's own start (not the source video) */
