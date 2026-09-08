@@ -14,9 +14,9 @@ export type ClipReviewStatus = 'unreviewed' | 'selected' | 'rejected'
 /**
  * The source YouTube video's own metadata, fed into the analyzer and title
  * prompts as context. The transcript alone often can't convey what's on
- * screen or what a reference means (this channel plays the game, with
- * its own vocabulary); the uploader's title/description/tags usually carry
- * the correct proper nouns and framing.
+ * screen or what a reference means (the channel covers one specific video
+ * game, with its own vocabulary); the uploader's title/description/tags
+ * usually carry the correct proper nouns and framing.
  */
 export interface VideoMetadata {
   title: string

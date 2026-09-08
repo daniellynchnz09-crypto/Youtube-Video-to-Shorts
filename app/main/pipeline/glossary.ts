@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -21,14 +21,31 @@ export interface GlossaryEntry {
   definition: string
 }
 
-let cached: GlossaryEntry[] | null = null
+interface GlossaryFile {
+  entries: GlossaryEntry[]
+  /** extra game/community-specific words to ignore when guessing new terms */
+  candidateStopwords?: string[]
+}
+
+/**
+ * The real glossary (`glossary.json`) is a local, gitignored file — it holds
+ * the specific game/community terminology the channel covers. A generic
+ * `glossary.example.json` is committed so a fresh checkout still runs.
+ */
+function loadFile(): GlossaryFile {
+  const real = join(__dirname, 'glossary.json')
+  const path = existsSync(real) ? real : join(__dirname, 'glossary.example.json')
+  return JSON.parse(readFileSync(path, 'utf-8')) as GlossaryFile
+}
+
+let cachedFile: GlossaryFile | null = null
+function file(): GlossaryFile {
+  if (!cachedFile) cachedFile = loadFile()
+  return cachedFile
+}
 
 export function loadGlossary(): GlossaryEntry[] {
-  if (!cached) {
-    const raw = readFileSync(join(__dirname, 'glossary.json'), 'utf-8')
-    cached = (JSON.parse(raw) as { entries: GlossaryEntry[] }).entries
-  }
-  return cached
+  return file().entries
 }
 
 function phraseRegex(form: string): RegExp {
@@ -93,29 +110,33 @@ function isKnownOrFragment(phrase: string): boolean {
   const lower = phrase.toLowerCase()
   if (KNOWN_FORMS.has(lower)) return true
   const compact = lower.replace(/[^a-z0-9]/g, '')
-  // Drop fragments of a known multi-word term ("Circles" from "a level",
-  // "Ninja Dan" from "the creator") and phrases built only from known terms.
+  // Drop fragments of a known multi-word term (e.g. one word of a two-word
+  // level name) and phrases built only from known terms.
   return KNOWN_COMPACT.some((k) => k.length >= 4 && (k.includes(compact) || compact.includes(k)))
 }
 
 /**
- * Words that show up capitalised or shouted in these transcripts but aren't
- * game terminology — sentence-openers, the game's own name, and generic
- * exclamations. Keeps the "candidate new terms" list from being mostly noise.
+ * Generic words that show up capitalised or shouted in transcripts but
+ * aren't terminology — sentence-openers and common exclamations. The
+ * glossary file can add game/community-specific ones via `candidateStopwords`.
  */
-const CANDIDATE_STOPWORDS = new Set([
-  'geometry', 'dash', 'gd', 'youtube', 'discord', 'god', 'okay', 'yeah', 'wow', 'oh', 'nah', 'hey',
+const GENERIC_STOPWORDS = [
+  'youtube', 'discord', 'god', 'okay', 'yeah', 'wow', 'oh', 'nah', 'hey',
   'i', 'a', 'the', 'and', 'but', 'so', 'in', 'it', 'we', 'you', 'they', 'this', 'that', 'today',
   'anyway', 'actually', 'yes', 'no', 'what', 'why', 'how', 'when', 'well', 'now', 'also', 'like',
-  'million', 'millions', 'get', 'ready', 'turn', 'back', 'hold', 'stop', 'trying', 'completion'
-])
+  'million', 'millions', 'get', 'ready', 'turn', 'back', 'hold', 'stop', 'trying'
+]
+
+const CANDIDATE_STOPWORDS = new Set(
+  [...GENERIC_STOPWORDS, ...(file().candidateStopwords ?? [])].map((w) => w.toLowerCase())
+)
 
 /**
  * Best-effort extraction of terminology that might be new to the glossary —
  * for the new-video transcript review. Flags ALL-CAPS runs (WhisperX renders
- * on-screen level names and shouted callouts this way) and repeated
- * TitleCase phrases, minus anything already in the glossary or the stoplist.
- * Imperfect by design; the user curates the result.
+ * on-screen names and shouted callouts this way) and repeated TitleCase
+ * phrases, minus anything already in the glossary or the stoplist. Imperfect
+ * by design; the user curates the result.
  */
 export function findUnknownTermCandidates(text: string): string[] {
   const candidates = new Map<string, number>()

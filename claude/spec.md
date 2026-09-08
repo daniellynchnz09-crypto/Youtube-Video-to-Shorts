@@ -5,7 +5,7 @@ Part of the [YouTube Short Splitter](../Claude.md) doc set. See [architecture.md
 ## Pipeline (URL → finished clips)
 
 1. **Input:** user pastes a YouTube URL into the app.
-2. **Resolve:** app locates/validates the video, and fetches its **metadata** — the uploader's own title, description, and tags (yt-dlp, no media download). This is fed into the analyzer and title prompts as context: the transcript is a live reaction to on-screen gameplay it can't describe, and the uploader's own text usually carries the correct level/creator names, difficulty framing, and terminology the transcription mishears (a real case: the level "a level" was transcribed as "a level"/"a level" — the correct spelling was right there in the video title). See [Title generation](#title-generation-context).
+2. **Resolve:** app locates/validates the video, and fetches its **metadata** — the uploader's own title, description, and tags (yt-dlp, no media download). This is fed into the analyzer and title prompts as context: the transcript is a live reaction to on-screen gameplay it can't describe, and the uploader's own text usually carries the correct content/creator names, difficulty framing, and terminology the transcription mishears (a real case: a piece of content whose name the transcription got wrong three different ways — the correct spelling was right there in the video title). See [Title generation](#title-generation-context).
 3. **Transcribe (audio-only pass):** yt-dlp downloads just the audio track (small, downsampled), WhisperX transcribes it locally with word-level timestamps re-timed by a dedicated forced-alignment pass — much finer than a normal subtitle file, and far more accurate than vanilla Whisper's attention-based timing (see [architecture.md](architecture.md#why-these-providers)). The video metadata from step 2 is fed in as Whisper's `initial_prompt` to bias proper-noun spelling in the subtitles themselves (see [Title generation context](#title-generation-context) — the same context helps transcription, not just the title).
 4. **Analyze:** the LLM analyzes the transcript (plus the video metadata from step 2) to find the most engaging/potentially-viral segments.
    - Each segment: **min 15s, max 60s**.
@@ -38,17 +38,17 @@ The generator is deliberately split into a cheap **candidate** stage and an expe
 
 ## Title generation context
 
-The clip's transcript slice alone is a weak basis for a title: the speech is a live reaction to on-screen gameplay the transcript doesn't describe, it leans on game-specific jargon, and the transcription mangles proper nouns it's never heard (level and creator names especially). Layers of context, cheapest first:
+The clip's transcript slice alone is a weak basis for a title: the speech is a live reaction to on-screen gameplay the transcript doesn't describe, it leans on game-specific jargon, and the transcription mangles proper nouns it's never heard (content and creator names especially). Layers of context, cheapest first:
 
 1. **Source video metadata (done).** The uploader's own title, description, and tags, fetched once per project (yt-dlp, no media download — [`fetchVideoMetadata`](../app/main/pipeline/ytdlp.ts)). Two uses, both in [`videoContext.ts`](../app/main/pipeline/videoContext.ts):
-   - `formatVideoMetadata()` → a context block in the **analyzer and title prompts** (title + description + tags). Fixed proper nouns downstream (transcribed "a level"/"a player" → correct "a level"/"a player") and surfaced framing the clip lacked ("joke level", "top 70").
+   - `formatVideoMetadata()` → a context block in the **analyzer and title prompts** (title + description + tags). Fixed proper nouns downstream (a mis-transcribed content name and a mis-transcribed person name both corrected) and surfaced framing the clip lacked.
    - `buildTranscriptionHint()` → Whisper's **`initial_prompt`** during transcription itself (title + description only — the raw tags are skipped because real videos' tags contain misspellings that would bias transcription the wrong way). This aims to get the spelling right *in the subtitles*, not just have downstream models correct it.
    - The tags are also a useful raw term list for seeding the game glossary below.
-2. **the game glossary (done, seeded).** [`app/main/pipeline/glossary.json`](../app/main/pipeline/glossary.json) — a hand-maintained data file (`term`, `category`, `aliases`, `misheard`, `definition` per entry), loaded and matched by [`glossary.ts`](../app/main/pipeline/glossary.ts). A deliberately minimal early slice of the full [custom dictionary](#editing-in-review) feature — no schema or UI. Three uses:
-   - canonical proper-noun spellings prepended to the transcription `initial_prompt` (`glossaryHintNames`), so level/player names are spelled right in the subtitles even when the video's own metadata doesn't mention them;
+2. **Game glossary (done, seeded).** [`app/main/pipeline/glossary.example.json`](../app/main/pipeline/glossary.example.json) is the committed template; the real `glossary.json` is a local, gitignored file of the channel's game-specific terminology (`term`, `category`, `aliases`, `misheard`, `definition` per entry, plus `candidateStopwords`), loaded and matched by [`glossary.ts`](../app/main/pipeline/glossary.ts). A deliberately minimal early slice of the full [custom dictionary](#editing-in-review) feature — no schema or UI. Three uses:
+   - canonical proper-noun spellings prepended to the transcription `initial_prompt` (`glossaryHintNames`), so content and player names are spelled right in the subtitles even when the video's own metadata doesn't mention them;
    - the entries that actually appear in a transcript / clip (matched by term, alias, or a known mis-transcription) are injected as a definitions block into the analyzer and title prompts (`matchGlossary` + `formatGlossaryForPrompt`) — the analyzer gets non-mechanic entries at short length to stay within Groq's token budget, the title prompt gets the full text;
    - the same matcher drives the term-flagging in the new-video workflow below.
-   - Seeded 2026-09-08 from the three videos sent so far, with the user writing every definition.
+   - Seeded from the first three source videos, with the user writing every definition.
 3. **Per-video context brief (experimental).** One extra LLM call over the full transcript + metadata, producing 2–3 sentences (what the video is, who's speaking, what's shown, key names), cached on the project and prepended to every per-clip title call. Compact and amortized rather than re-sending the whole transcript per clip. To be trialled after the glossary; kept only if it moves title quality noticeably.
 4. **Model quality.** Titles run on Groq's `openai/gpt-oss-120b` (free). The title step is tiny (one short call per clip) and isolated behind the `TitleGenerator` interface, so moving just this step to the Claude API — while analysis stays on Groq — is a small, low-cost upgrade if the above context still isn't enough. See [architecture.md](architecture.md#why-these-providers).
 5. **On-screen analysis (backlog).** A vision pass over clip frames to ground titles in what's actually shown — the biggest lift, tracked under [Game-specific context](backlog.md#game-specific-context-terminology--asset-recognition).
@@ -63,7 +63,7 @@ When the user provides a new YouTube link to make shorts from, the order is:
 2. **Deliver the transcript for review** — a readable, timestamped, sentence-grouped file — with:
    - every [glossary](#title-generation-context) term that appears in this transcript **flagged** (grouped by category, noting where the transcript's spelling is wrong), and
    - a separate list of **candidate new terminology** not yet in the glossary (`findUnknownTermCandidates` — ALL-CAPS runs and repeated TitleCase phrases, minus known terms and stopwords).
-3. **User defines the new terms.** Their definitions are added to `glossary.json`.
+3. **User defines the new terms.** Their definitions are added to the local `glossary.json`.
 4. **Then** proceed to candidate analysis → review → render.
 
 This keeps the glossary growing with real usage, so each new video's subtitles and titles benefit from terminology learned on the previous ones.
@@ -88,7 +88,7 @@ Canvas: **1080×1920** (portrait).
   - **Emoji pop-in:** if a spoken word has a matching/equivalent emoji, it animates in when the word is said and disappears after 1.5–2 seconds.
 - **Audio:** final rendered clip audio should match source quality — the audio-only transcription pass is deliberately downsampled for Whisper's benefit, but the video segment download and render must not carry that downsampling through to the final clip.
 
-**Reference example:** [`docs/reference/format-example.png`](../docs/reference/format-example.png) — a Vizard.ai-style output screenshot the visual layout is modeled on (ignore the "Vizard.ai" watermark itself). Shows: title block in bold yellow text with black outline, wrapped across multiple centered lines, sitting above the centered 16:9 video; a thin progress/status bar overlaid at the top of the video; below the video, karaoke-style subtitle text with the current phrase in white ("FIRSTLY,") and the emphasized/highlighted word in red ("THE START"), large and bold, taking up a big share of the bottom space.
+**Reference layout** (modeled on a typical auto-clipping tool's output): title block in bold yellow text with black outline, wrapped across multiple centered lines, sitting above the centered 16:9 video; a thin progress/status bar overlaid at the top of the video; below the video, karaoke-style subtitle text with the current phrase in white and the emphasized/highlighted word in red, large and bold, taking up a big share of the bottom space.
 
 ## Editing (in review)
 

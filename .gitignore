@@ -7,3 +7,7 @@ scratch/
 *.db
 *.sqlite
 whisperx-venv/
+
+# private, game-specific working copies — never commit
+local-private/
+app/main/pipeline/glossary.json

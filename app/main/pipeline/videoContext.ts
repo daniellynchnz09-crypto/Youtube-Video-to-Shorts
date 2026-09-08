@@ -53,29 +53,27 @@ export function formatVideoMetadata(metadata: VideoMetadata | undefined): string
 /**
  * Builds a Whisper `initial_prompt` hint from the video metadata, to bias
  * transcription toward the correct spelling of proper nouns it would
- * otherwise mangle (level names, creator names, game jargon it's never
- * heard — a real case: "a level" came out as "a level"/"a level", "a player"
- * as "a player"). `initial_prompt` is a soft bias with roughly a
- * 224-token budget, and Whisper does best with natural prose that matches
- * the expected speaking style, so this uses the uploader's title +
- * description (correct casing and spelling) and deliberately NOT the raw
- * tag list — the tags on real videos contain misspellings ("a level",
- * "achnes") that would bias transcription the wrong way.
+ * otherwise mangle (content/level names, creator names, game jargon it's
+ * never heard — a real case: a content name transcribed three different
+ * wrong ways, and a player name turned into an unrelated common phrase).
+ * `initial_prompt` is a soft bias with roughly a 224-token budget, and
+ * Whisper does best with natural prose that matches the expected speaking
+ * style, so this uses the uploader's title + description (correct casing and
+ * spelling) and deliberately NOT the raw tag list — the tags on real videos
+ * contain misspellings that would bias transcription the wrong way.
  *
  * The hint MUST end on a complete sentence. Whisper treats the prompt as
  * text preceding the audio and will "continue" a dangling clause — observed
- * 2026-09-02: a 600-char cut landed on "...but all", and the transcript came
- * back opening with a hallucinated "the time it was not verified by a player,
- * so I decided to make this video about it." that was never spoken. Trimming
+ * 2026-09-02: a 600-char cut landed mid-clause, and the transcript came back
+ * opening with a full hallucinated sentence that was never spoken. Trimming
  * back to the last sentence-ending punctuation makes the prompt read as
  * finished text rather than a lead-in. Returns '' when there's nothing usable.
  *
- * A short list of the game proper nouns from the glossary is prepended
- * (level and player names Whisper otherwise mangles). The video-specific
- * metadata prose stays LAST so it survives Whisper's ~224-token tail
- * truncation when the whole prompt runs long — the glossary list is generic
- * fallback coverage, the metadata names the level this video is actually
- * about.
+ * A short list of glossary proper nouns is prepended (content and player
+ * names Whisper otherwise mangles). The video-specific metadata prose stays
+ * LAST so it survives Whisper's ~224-token tail truncation when the whole
+ * prompt runs long — the glossary list is generic fallback coverage, the
+ * metadata names what this particular video is about.
  */
 const MAX_HINT_CHARS = 700
 const MAX_GLOSSARY_HINT_CHARS = 260
@@ -104,7 +102,7 @@ export function buildTranscriptionHint(metadata: VideoMetadata | undefined): str
     names = names.slice(0, MAX_GLOSSARY_HINT_CHARS)
     names = names.slice(0, names.lastIndexOf(','))
   }
-  const namesSentence = names ? `the game names that may come up: ${names}.` : ''
+  const namesSentence = names ? `Names and terms that may come up: ${names}.` : ''
 
   return [namesSentence, prose].filter(Boolean).join('\n').trim()
 }

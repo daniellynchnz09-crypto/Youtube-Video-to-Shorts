@@ -1,0 +1,27 @@
+{
+  "note": "Example glossary. Copy to glossary.json (gitignored) and fill with the terminology for the game/community the channel covers. Consumed by glossary.ts: canonical spellings feed the WhisperX initial_prompt; matched entries' definitions feed the analyzer and title prompts; term + aliases + misheard feed the new-video term-flagging step. category: person | level | difficulty | mechanic | version | song | reference. aliases = other correct names/spellings. misheard = transcription errors that should map back to this term. candidateStopwords = extra words to ignore when guessing new terms (e.g. the game's own name).",
+  "candidateStopwords": ["examplegame", "example"],
+  "entries": [
+    {
+      "term": "Example Creator",
+      "category": "person",
+      "aliases": ["ExampleCreatorTag"],
+      "misheard": ["Example Creador"],
+      "definition": "A short description of who this person is and why they matter to the channel's audience."
+    },
+    {
+      "term": "Example Level",
+      "category": "level",
+      "aliases": [],
+      "misheard": ["Egg Sample Level"],
+      "definition": "A short description of this piece of user-created content — its reputation, creator, and what makes it notable."
+    },
+    {
+      "term": "example-mechanic",
+      "category": "mechanic",
+      "aliases": ["alt name for the mechanic"],
+      "misheard": [],
+      "definition": "What this game mechanic or piece of jargon means, in one or two sentences."
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # YouTube Short Splitter
 
-A tool that takes a YouTube video URL and automatically splits it into vertical (1080x1920) shorts suitable for YouTube Shorts/TikTok — similar to TikTok's own clipping tool or Vizard AI. It finds the most engaging segments, generates clickable titles, burns in animated karaoke-style subtitles, and lets the user review/edit/export the results. Runs as a local Electron desktop app (see [claude/architecture.md](claude/architecture.md) for why).
+A tool that takes a YouTube video URL and automatically splits it into vertical (1080x1920) shorts suitable for YouTube Shorts/TikTok — similar to TikTok's own clipping tool or other auto-clipping services. It finds the most engaging segments, generates clickable titles, burns in animated karaoke-style subtitles, and lets the user review/edit/export the results. Runs as a local Electron desktop app (see [claude/architecture.md](claude/architecture.md) for why).
 
 This doc set is split by purpose under `claude/` — update the relevant file as decisions change or work progresses:
 

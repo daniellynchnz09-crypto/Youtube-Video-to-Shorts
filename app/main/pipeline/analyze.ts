@@ -202,8 +202,8 @@ function buildPrompt(
     : ''
 
   // For the analyzer, the useful glossary entries are the ones that tell it
-  // what a *moment* is about — levels, people, references, difficulty framing.
-  // Plain game mechanics ("wave", "orb") matter more for a title than for
+  // what a *moment* is about — content/level names, people, references,
+  // difficulty framing. Plain game mechanics matter more for a title than for
   // picking segments, and dropping them keeps this within Groq's per-minute
   // token budget on top of an already-large transcript prompt.
   const glossaryMatches = matchGlossary(words.map((w) => w.word).join(' '))
@@ -211,7 +211,7 @@ function buildPrompt(
     .slice(0, 25)
   const glossaryBlock = formatGlossaryForPrompt(glossaryMatches, { maxDefinitionChars: 120 })
   const glossarySection = glossaryBlock
-    ? `\nthe game terms that appear in this transcript (this channel plays the game; use these to judge what a moment is actually about):\n${glossaryBlock}\n`
+    ? `\nThe channel covers one specific video game. Terms from its glossary that appear in this transcript (use these to judge what a moment is actually about):\n${glossaryBlock}\n`
     : ''
 
   return `You are selecting the most engaging, viral-worthy segments from a video transcript to turn into vertical short-form clips.

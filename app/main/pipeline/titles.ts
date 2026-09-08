@@ -37,12 +37,12 @@ export const groqTitleGenerator: TitleGenerator = {
       ? `\n\nContext — metadata from the full source video this clip is taken from. Use it to get names, terminology, and framing right (the transcript excerpt may not make them clear), but write the title for THIS clip's content, not the whole video:\n${metadataBlock}`
       : ''
 
-    // the game terms in this clip, with their meanings and correct
-    // spellings — the transcript mis-hears proper nouns and the model has no
-    // way to know a "wave" is a game mode, not the ocean.
+    // Glossary terms in this clip, with their meanings and correct spellings —
+    // the transcript mis-hears proper nouns and the model has no way to know a
+    // game-specific word isn't being used in its everyday sense.
     const glossaryBlock = formatGlossaryForPrompt(matchGlossary(transcript))
     const glossaryNote = glossaryBlock
-      ? `\n\nthe game terms in this clip (this channel plays the game — use the correct spelling, and don't build a title on a misreading of one of these):\n${glossaryBlock}`
+      ? `\n\nThe channel covers one specific video game. Its glossary terms that appear in this clip (use the correct spelling, and don't build a title on a misreading of one of these):\n${glossaryBlock}`
       : ''
 
     const completion = await groq.chat.completions.create({
