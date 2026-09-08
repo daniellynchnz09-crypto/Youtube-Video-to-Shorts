@@ -44,27 +44,29 @@ The clip's transcript slice alone is a weak basis for a title: the speech is a l
    - `formatVideoMetadata()` → a context block in the **analyzer and title prompts** (title + description + tags). Fixed proper nouns downstream (transcribed "a level"/"a player" → correct "a level"/"a player") and surfaced framing the clip lacked ("joke level", "top 70").
    - `buildTranscriptionHint()` → Whisper's **`initial_prompt`** during transcription itself (title + description only — the raw tags are skipped because real videos' tags contain misspellings that would bias transcription the wrong way). This aims to get the spelling right *in the subtitles*, not just have downstream models correct it.
    - The tags are also a useful raw term list for seeding the game glossary below.
-2. **Simple game glossary (in progress).** A hand-maintained the game term file the pipeline draws on — injected into the title + analyzer prompts, and folded into the transcription hint. A deliberately minimal early slice of the full [custom dictionary](#editing-in-review) feature — a data file, no schema or UI — so short quality can be judged with it in place before the dictionary UI exists.
-   - **Seeding:** every video link sent so far (`VIDEO_ID`, `VIDEO_ID`, `VIDEO_ID`) is re-transcribed with the metadata hint; the user reads each transcript and supplies definitions for the terminology, which become the glossary's first entries.
-   - **Ongoing workflow (per [new-video process](#new-video-workflow) below):** when a new link comes in, the transcript is delivered first — with glossary terms it already contains flagged, and candidate new terms listed — and the user defines the new ones before any short is generated.
+2. **the game glossary (done, seeded).** [`app/main/pipeline/glossary.json`](../app/main/pipeline/glossary.json) — a hand-maintained data file (`term`, `category`, `aliases`, `misheard`, `definition` per entry), loaded and matched by [`glossary.ts`](../app/main/pipeline/glossary.ts). A deliberately minimal early slice of the full [custom dictionary](#editing-in-review) feature — no schema or UI. Three uses:
+   - canonical proper-noun spellings prepended to the transcription `initial_prompt` (`glossaryHintNames`), so level/player names are spelled right in the subtitles even when the video's own metadata doesn't mention them;
+   - the entries that actually appear in a transcript / clip (matched by term, alias, or a known mis-transcription) are injected as a definitions block into the analyzer and title prompts (`matchGlossary` + `formatGlossaryForPrompt`) — the analyzer gets non-mechanic entries at short length to stay within Groq's token budget, the title prompt gets the full text;
+   - the same matcher drives the term-flagging in the new-video workflow below.
+   - Seeded 2026-09-08 from the three videos sent so far, with the user writing every definition.
+3. **Per-video context brief (experimental).** One extra LLM call over the full transcript + metadata, producing 2–3 sentences (what the video is, who's speaking, what's shown, key names), cached on the project and prepended to every per-clip title call. Compact and amortized rather than re-sending the whole transcript per clip. To be trialled after the glossary; kept only if it moves title quality noticeably.
+4. **Model quality.** Titles run on Groq's `openai/gpt-oss-120b` (free). The title step is tiny (one short call per clip) and isolated behind the `TitleGenerator` interface, so moving just this step to the Claude API — while analysis stays on Groq — is a small, low-cost upgrade if the above context still isn't enough. See [architecture.md](architecture.md#why-these-providers).
+5. **On-screen analysis (backlog).** A vision pass over clip frames to ground titles in what's actually shown — the biggest lift, tracked under [Game-specific context](backlog.md#game-specific-context-terminology--asset-recognition).
+
+Title imperfection on the free model is expected and is **not** treated as a bug during clip review (see [bugs.md](bugs.md)) — review feedback focuses on segment boundaries, timing, and selection until the glossary and on-screen analysis mature.
 
 ## New-video workflow
 
 When the user provides a new YouTube link to make shorts from, the order is:
 
-1. **Transcribe first, don't render.** Run the video through download + metadata fetch + WhisperX transcription (with the metadata `initial_prompt` hint).
+1. **Transcribe first, don't render.** Run the video through download + metadata fetch + WhisperX transcription (with the metadata + glossary `initial_prompt` hint).
 2. **Deliver the transcript for review** — a readable, timestamped, sentence-grouped file — with:
-   - every term already in the [game glossary](#title-generation-context) that appears in this transcript **flagged**, and
-   - a separate list of **candidate new terminology** (proper nouns, jargon) not yet in the glossary.
-3. **User defines the new terms.** Their definitions are added to the glossary file.
+   - every [glossary](#title-generation-context) term that appears in this transcript **flagged** (grouped by category, noting where the transcript's spelling is wrong), and
+   - a separate list of **candidate new terminology** not yet in the glossary (`findUnknownTermCandidates` — ALL-CAPS runs and repeated TitleCase phrases, minus known terms and stopwords).
+3. **User defines the new terms.** Their definitions are added to `glossary.json`.
 4. **Then** proceed to candidate analysis → review → render.
 
-This keeps the glossary growing with real usage and means each new video's subtitles/titles benefit from terminology learned on the previous ones.
-3. **Per-video context brief (experimental).** One extra LLM call over the full transcript + metadata, producing 2–3 sentences (what the video is, who's speaking, what's shown, key names), cached on the project and prepended to every per-clip title call. Compact and amortized rather than re-sending the whole transcript per clip. To be trialled after the glossary; kept only if it moves title quality noticeably.
-4. **Model quality.** Titles run on Groq's `openai/gpt-oss-120b` (free). The title step is tiny (one short call per clip) and isolated behind the `TitleGenerator` interface, so moving just this step to the Claude API — while analysis stays on Groq — is a small, low-cost upgrade if the above context still isn't enough. See [architecture.md](architecture.md#why-these-providers).
-5. **On-screen analysis (backlog).** A vision pass over clip frames to ground titles in what's actually shown — the biggest lift, tracked under [Game-specific context](backlog.md#game-specific-context-terminology--asset-recognition).
-
-Title imperfection on the free model is expected and is **not** treated as a bug during clip review (see [bugs.md](bugs.md)) — review feedback focuses on segment boundaries, timing, and selection until the glossary and on-screen analysis exist.
+This keeps the glossary growing with real usage, so each new video's subtitles and titles benefit from terminology learned on the previous ones.
 
 ## Rendering spec
 

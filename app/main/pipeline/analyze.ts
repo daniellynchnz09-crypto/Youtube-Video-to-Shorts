@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { segmentSchema, type Segment } from '../../../shared/schemas.js'
 import type { VideoMetadata, WordTimestamp } from '../../../shared/types.js'
 import { formatVideoMetadata } from './videoContext.js'
+import { formatGlossaryForPrompt, matchGlossary } from './glossary.js'
 
 /**
  * The analysis step behind an interface, per Claude.md's expandability note:
@@ -200,10 +201,23 @@ function buildPrompt(
     ? `\nContext — metadata from the source video, to help you understand references, in-jokes, and terminology in the transcript (the speech is a live reaction to something on screen the transcript doesn't describe):\n${metadataBlock}\n`
     : ''
 
+  // For the analyzer, the useful glossary entries are the ones that tell it
+  // what a *moment* is about — levels, people, references, difficulty framing.
+  // Plain game mechanics ("wave", "orb") matter more for a title than for
+  // picking segments, and dropping them keeps this within Groq's per-minute
+  // token budget on top of an already-large transcript prompt.
+  const glossaryMatches = matchGlossary(words.map((w) => w.word).join(' '))
+    .filter((m) => m.entry.category !== 'mechanic')
+    .slice(0, 25)
+  const glossaryBlock = formatGlossaryForPrompt(glossaryMatches, { maxDefinitionChars: 120 })
+  const glossarySection = glossaryBlock
+    ? `\nthe game terms that appear in this transcript (this channel plays the game; use these to judge what a moment is actually about):\n${glossaryBlock}\n`
+    : ''
+
   return `You are selecting the most engaging, viral-worthy segments from a video transcript to turn into vertical short-form clips.
 
 The transcript below has a word-index marker like «140» before every ${MARKER_INTERVAL}th word, so you can reference positions without counting every word yourself. It also has inline markers like ‖pause 1.3s‖ wherever the speaker paused that long before their next word.
-${contextSection}
+${contextSection}${glossarySection}
 Rules:
 - Each segment must correspond to roughly 15-60 seconds of speech.
 - Return between ${minSegments} and ${maxSegments} segments, ranked most engaging first.

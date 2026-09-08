@@ -1,4 +1,5 @@
 import type { VideoMetadata } from '../../../shared/types.js'
+import { glossaryHintNames } from './glossary.js'
 
 /**
  * Formats the source video's metadata into a compact block for the analyzer
@@ -10,6 +11,22 @@ import type { VideoMetadata } from '../../../shared/types.js'
 const MAX_DESCRIPTION_CHARS = 700
 const MAX_TAGS = 30
 
+/**
+ * Trims the boilerplate tail off a YouTube description — social links, a
+ * "Discord"/"Timestamps" heading, or the first bare URL. What's left is the
+ * part that actually describes the video, which is all the prompts and the
+ * transcription hint want.
+ */
+function usefulDescription(description: string): string {
+  const lines = description.split(/\r?\n/)
+  const cut = lines.findIndex((l) =>
+    /^\s*(discord|my discord( server)?|socials?|follow me|links?|timestamps?|chapters?|music|song list|credits?)\s*:?\s*$/i.test(
+      l
+    ) || /https?:\/\//i.test(l)
+  )
+  return (cut === -1 ? lines : lines.slice(0, cut)).join('\n').trim()
+}
+
 export function formatVideoMetadata(metadata: VideoMetadata | undefined): string {
   if (!metadata) return ''
   const lines: string[] = []
@@ -17,7 +34,7 @@ export function formatVideoMetadata(metadata: VideoMetadata | undefined): string
   const title = metadata.title.trim()
   if (title) lines.push(`Video title: ${title}`)
 
-  const description = metadata.description.trim()
+  const description = usefulDescription(metadata.description.trim())
   if (description) {
     const trimmed =
       description.length > MAX_DESCRIPTION_CHARS
@@ -52,22 +69,42 @@ export function formatVideoMetadata(metadata: VideoMetadata | undefined): string
  * so I decided to make this video about it." that was never spoken. Trimming
  * back to the last sentence-ending punctuation makes the prompt read as
  * finished text rather than a lead-in. Returns '' when there's nothing usable.
+ *
+ * A short list of the game proper nouns from the glossary is prepended
+ * (level and player names Whisper otherwise mangles). The video-specific
+ * metadata prose stays LAST so it survives Whisper's ~224-token tail
+ * truncation when the whole prompt runs long — the glossary list is generic
+ * fallback coverage, the metadata names the level this video is actually
+ * about.
  */
 const MAX_HINT_CHARS = 700
+const MAX_GLOSSARY_HINT_CHARS = 260
+
+function metadataProse(metadata: VideoMetadata): string {
+  const title = metadata.title.trim()
+  const description = usefulDescription(metadata.description.trim())
+
+  let prose = [title, description].filter(Boolean).join('. ')
+  if (!prose) return ''
+
+  if (prose.length > MAX_HINT_CHARS) prose = prose.slice(0, MAX_HINT_CHARS)
+
+  const lastSentenceEnd = Math.max(prose.lastIndexOf('.'), prose.lastIndexOf('!'), prose.lastIndexOf('?'))
+  if (lastSentenceEnd >= 40) prose = prose.slice(0, lastSentenceEnd + 1)
+  else if (!/[.!?]$/.test(prose)) prose += '.'
+
+  return prose.trim()
+}
 
 export function buildTranscriptionHint(metadata: VideoMetadata | undefined): string {
-  if (!metadata) return ''
-  const title = metadata.title.trim()
-  const description = metadata.description.trim()
+  const prose = metadata ? metadataProse(metadata) : ''
 
-  let hint = [title, description].filter(Boolean).join('. ')
-  if (!hint) return ''
+  let names = glossaryHintNames()
+  if (names.length > MAX_GLOSSARY_HINT_CHARS) {
+    names = names.slice(0, MAX_GLOSSARY_HINT_CHARS)
+    names = names.slice(0, names.lastIndexOf(','))
+  }
+  const namesSentence = names ? `the game names that may come up: ${names}.` : ''
 
-  if (hint.length > MAX_HINT_CHARS) hint = hint.slice(0, MAX_HINT_CHARS)
-
-  const lastSentenceEnd = Math.max(hint.lastIndexOf('.'), hint.lastIndexOf('!'), hint.lastIndexOf('?'))
-  if (lastSentenceEnd >= 40) hint = hint.slice(0, lastSentenceEnd + 1)
-  else if (!/[.!?]$/.test(hint)) hint += '.'
-
-  return hint.trim()
+  return [namesSentence, prose].filter(Boolean).join('\n').trim()
 }
