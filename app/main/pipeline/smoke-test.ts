@@ -91,7 +91,7 @@ async function main(): Promise<void> {
 
   const clipWords = wordsInSegment(words, topSegment)
   const title = await timed('title', () =>
-    groqTitleGenerator.generate(groq, clipWords, topSegment.endsAtSentenceEnd, metadata)
+    groqTitleGenerator.generate(groq, clipWords, topSegment.endsAtSentenceEnd, topSegment.reason, metadata)
   )
   console.log(`  -> title: "${title}"`)
 

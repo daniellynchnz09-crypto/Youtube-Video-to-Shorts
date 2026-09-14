@@ -10,13 +10,21 @@ export interface TitleGenerator {
     groq: Groq,
     clipWords: WordTimestamp[],
     endsAtSentenceEnd: boolean,
+    segmentReason: string,
     metadata?: VideoMetadata
   ): Promise<string>
 }
 
 export const groqTitleGenerator: TitleGenerator = {
-  async generate(groq, clipWords, endsAtSentenceEnd, metadata) {
+  async generate(groq, clipWords, endsAtSentenceEnd, segmentReason, metadata) {
     const transcript = clipWords.map((w) => w.word).join(' ')
+
+    // The analyzer already judged *why* this moment is engaging (see
+    // analyze.ts's `reason` field) — observed directly (2026-09-08 review) to
+    // sometimes already be a better title than what this step generates on
+    // its own from the raw transcript. Feed it in as grounding, not something
+    // to just restate.
+    const reasonNote = `\n\nWhy this moment was selected as a candidate clip (for context on what's actually engaging about it — don't just restate this verbatim as the title):\n${segmentReason}`
 
     // When the clip is a quick cut before a new topic (see analyze.ts), the
     // last stretch of transcript is often just a tease into something the
@@ -52,7 +60,15 @@ export const groqTitleGenerator: TitleGenerator = {
           role: 'user',
           content: `Write one short, clickable, attention-grabbing title for a vertical short-form video clip based on this transcript excerpt. Explain what the clip is about while staying intriguing.
 
-Base the title on what's substantially discussed across most of the clip's runtime. Even when the transcript ends on a complete, well-formed sentence, don't build the title around a detail, question, or hook that only shows up in that closing line — if that subject isn't also present earlier in the transcript, it's not representative of the clip and shouldn't drive the title.${contextNote}${glossaryNote}
+Prefer a single plain, declarative statement of what actually happens over stacking a mechanic name + manufactured stakes word + exclamation into one line (e.g. avoid a manufactured stakes word like "Nightmare" that isn't earned by the transcript, or a colon-stacked "X: Y!" format that reads as generic clickbait). A title can still hold back the resolution as a hook — e.g. "This Mistake Cost Me a New Record" states the situation plainly but leaves whether they recovered as the reason to watch — but don't go so vague or cryptic that it's unclear what the clip is even about.
+
+Two glossary terms appearing near each other in the transcript are not necessarily one combined thing — don't mash them into an invented compound name (e.g. treating two separate glossary entries as if they were one named combination) unless the glossary itself defines them together. Describe the relationship in plain words instead.
+
+A specific level/character name from the glossary isn't mandatory in every title — if naming it out of context would read as ambiguous (e.g. a level name that could be misread as an object or action rather than a place), it's fine to leave it out and describe the moment more generally instead. Correct-but-confusing is not better than vaguer-but-clear.
+
+Don't personify a game mechanic or obstacle as an opponent with intent (e.g. a gamemode "beating" the player) unless the transcript is genuinely describing it that way — most of these are physics/level elements, not agents making decisions.
+
+Base the title on what's substantially discussed across most of the clip's runtime. Even when the transcript ends on a complete, well-formed sentence, don't build the title around a detail, question, or hook that only shows up in that closing line — if that subject isn't also present earlier in the transcript, it's not representative of the clip and shouldn't drive the title.${contextNote}${glossaryNote}${reasonNote}
 
 Transcript:
 ${transcript}${endingNote}

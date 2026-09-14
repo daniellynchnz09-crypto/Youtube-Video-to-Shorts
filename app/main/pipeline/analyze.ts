@@ -28,6 +28,24 @@ export interface SegmentAnalyzer {
  */
 const MARKER_INTERVAL = 10
 /**
+ * Groq's `openai/gpt-oss-120b` caps every single request at a flat 8000
+ * tokens, independent of the per-minute budget (a 413, not the retryable 400
+ * TPM-exhaustion case in `requestSegments` below — retrying the identical
+ * oversized prompt just fails again). First hit 2026-09-09 on a 2419-word
+ * video (8041 tokens requested). Tried widening marker spacing for long
+ * transcripts first — measuring the actual prompt afterward showed that was
+ * the wrong lever: the real chars-per-token ratio here is ~2.7-2.9 (not the
+ * ~4 assumed), and the fixed rules/instructions text alone is already
+ * ~8000+ characters, paid on every call regardless of video length: widening
+ * markers only trims a few hundred characters (spread across the whole
+ * transcript), nowhere near enough for a genuinely long video, and it also
+ * costs boundary precision (see `snapStartIndexToSentenceStart` below,
+ * added after a wider-marker run landed a start nine words late). The actual
+ * fix is `chunkWordRanges` below: split long transcripts across multiple
+ * requests, each comfortably under budget, rather than trying to shrink one
+ * request to fit an ever-growing video.
+ */
+/**
  * Gaps at or above this are called out inline in the transcript sent to the
  * LLM (see buildPrompt) — the transcript is otherwise just word tokens, so
  * without this the model has no way to tell a real sentence boundary from a
@@ -48,6 +66,37 @@ const PAUSE_MARK_THRESHOLD_SECONDS = 0.6
  */
 const BOUNDARY_SNAP_SEARCH_WORDS = 15
 const BOUNDARY_SNAP_MIN_GAP_SECONDS = 0.35
+
+/**
+ * startWordIndex gets no equivalent correction to endWordIndex's several
+ * layers below (snapEndIndexToPause, findSentenceEnd) — it's trusted as
+ * given, despite coming from the exact same sparse-marker interpolation the
+ * end-side fixes exist to correct for. Confirmed in practice (2026-09-09): a
+ * candidate opened on "attempt." — the LAST word of the sentence "Wonder how
+ * many rooms I can do in one attempt." — nine words past the real start,
+ * dropping the entire setup the clip needed. A word ending its own sentence,
+ * or with no pause/punctuation before it at all, is never a real sentence
+ * start (barring index 0) — walk backward to the nearest position that
+ * actually is one, the same "trust silence/punctuation over index counting"
+ * logic already used for endWordIndex.
+ */
+const START_SNAP_SEARCH_WORDS = 20
+
+function isSentenceStart(words: WordTimestamp[], index: number): boolean {
+  if (index === 0) return true
+  const prev = words[index - 1]!
+  const gap = words[index]!.start - prev.end
+  return hasSentenceEndingPunctuation(prev.word) || gap >= PAUSE_MARK_THRESHOLD_SECONDS
+}
+
+function snapStartIndexToSentenceStart(words: WordTimestamp[], startIndex: number): number {
+  if (isSentenceStart(words, startIndex)) return startIndex
+  const earliest = Math.max(0, startIndex - START_SNAP_SEARCH_WORDS)
+  for (let i = startIndex - 1; i > earliest; i--) {
+    if (isSentenceStart(words, i)) return i
+  }
+  return startIndex
+}
 
 function snapEndIndexToPause(words: WordTimestamp[], startIndex: number, endIndex: number): number {
   const earliest = Math.max(startIndex, endIndex - BOUNDARY_SNAP_SEARCH_WORDS)
@@ -164,6 +213,16 @@ const MIN_SEGMENT_SECONDS = 15
 const MAX_SEGMENT_SECONDS = 60
 
 /**
+ * Deterministic backstop for "too much dead air" — see its use below.
+ * DEAD_AIR_GAP_THRESHOLD_SECONDS is intentionally higher than
+ * PAUSE_MARK_THRESHOLD_SECONDS (0.6s): normal speech has plenty of
+ * sub-3s pauses that don't make a segment feel disjointed, so only
+ * genuinely long silences count toward the fraction.
+ */
+const DEAD_AIR_GAP_THRESHOLD_SECONDS = 3
+const MAX_DEAD_AIR_FRACTION = 0.35
+
+/**
  * Groq's free tier caps openai/gpt-oss-120b at 8000 tokens/minute — sending a
  * timestamp on every single word blew way past that on anything longer than
  * a couple minutes (a 17-minute/1931-word video alone needed ~20k tokens).
@@ -221,10 +280,11 @@ ${contextSection}${glossarySection}
 Rules:
 - Each segment must correspond to roughly 15-60 seconds of speech.
 - Return between ${minSegments} and ${maxSegments} segments, ranked most engaging first.
-- Segments must not overlap.
+- Segments are allowed to overlap or reuse the same footage as another segment, but only when each one gives that footage a genuinely different framing (a different hook, a different starting/ending point that changes what question or moment the clip centers on) — not the same beginning and end proposed twice. Don't force this; most segments should still just be your best independent picks. It's fine, and expected, for two segments to share part of their time range when the footage naturally supports more than one distinct short.
 - startWordIndex/endWordIndex should be your best estimate of the actual word position — interpolate between the nearest markers.
 - Critical: pick boundaries that give the clip an obvious beginning and end. startWordIndex must land at (or very near) the start of a complete sentence or thought — not mid-sentence, so the viewer isn't dropped in without context. endWordIndex must land at (or very near) the end of a complete sentence or thought — not cut off mid-idea.
 - Beyond just the boundaries, the segment as a whole should cover one coherent moment or topic, not just start and end cleanly. Watch specifically for a segment that straddles the tail end of one activity/topic and the start of a completely unrelated one (e.g. barely a comment on finishing one thing, then moving straight into commentary on something unrelated) — even with clean sentence boundaries on both ends, a segment like that lacks a real throughline and reads as unfocused. When a candidate segment would straddle that kind of seam, prefer shifting it to sit entirely within whichever side has more substance, rather than spanning both.
+- Watch the ‖pause Xs‖ markers inside a candidate segment, not just at its edges. A single long pause mid-segment can be fine (e.g. quiet gameplay before the speaker reacts again). But a segment strung together from multiple short lines separated by several long pauses (roughly 5s+) is mostly dead air wearing a few words of connective tissue — reads as disjointed voice clips, not one moment, even when each individual line is on-topic. Prefer a tighter segment around the actual commentary over a wide one that pads itself out with silence to reach the fragments.
 - Worth factoring into how engaging a segment is: if it sets up a question, wager, spin/roll, or prediction, it reads better when the resolution is included too, rather than ending right on the setup line. If the payoff is close by and fits within the 15-60s limit, prefer extending endWordIndex to include it. This is a nice-to-have, not a hard requirement — plenty of engaging segments don't involve this pattern at all, and if the actual resolution is genuinely far off (e.g. a long build-up or a slow reveal), it's fine to either use a different segment or just let this one end on the setup.
 - When estimating endWordIndex, err toward landing a couple words early rather than late. Overshooting past the true end of the thought and into the next topic is worse than ending a beat sooner — the intended sentence/thought must not have any of the following topic's words bleeding into the clip.
 - Watch for false starts and stutters (e.g. "I'd probably be I'd probably be") — a repeated/incomplete phrase followed by a pause usually means the speaker is still collecting their thoughts mid-sentence, not concluding one. Don't let endWordIndex land there. Prefer pushing endWordIndex past the pause to include how the speaker actually finishes the thought, but only if that still fits the 15-60s limit above — if including the real completion would push the segment past 60s, end the segment earlier instead, before the repeated phrase begins, rather than breaking the duration limit.
@@ -292,6 +352,40 @@ async function requestSegments(
 }
 
 /**
+ * The real fix for the 8000-token cap (see MARKER_INTERVAL's comment above):
+ * split a long transcript across multiple requestSegments calls instead of
+ * squeezing one oversized prompt to fit. 1300 words is a deliberate safety
+ * margin, not a tight fit — measured directly (2026-09-09) against a
+ * 2419-word video whose full-transcript prompt came in at 24375 chars /
+ * ~8000-9800 tokens (the token count varies run to run for reasons not fully
+ * pinned down, hence the margin) with ~10500 of those characters being the
+ * fixed rules/glossary/metadata text every request pays regardless of chunk
+ * size. 1300 words of transcript on top of that fixed cost lands well clear
+ * of 8000 tokens even at the higher end of the observed ratio.
+ *
+ * Consecutive chunks overlap by 100 words so a segment whose real boundaries
+ * straddle a chunk split isn't missed by both sides — each side may
+ * independently propose it, which is fine: overlap between candidates is
+ * already an accepted, expected outcome of this analyzer (see the "allowed
+ * to overlap" rule in buildPrompt), not something that needs deduping here.
+ */
+const CHUNK_MAX_WORDS = 1300
+const CHUNK_OVERLAP_WORDS = 100
+
+function chunkWordRanges(totalWords: number): Array<{ start: number; end: number }> {
+  if (totalWords <= CHUNK_MAX_WORDS) return [{ start: 0, end: totalWords }]
+  const ranges: Array<{ start: number; end: number }> = []
+  let start = 0
+  while (start < totalWords) {
+    const end = Math.min(start + CHUNK_MAX_WORDS, totalWords)
+    ranges.push({ start, end })
+    if (end >= totalWords) break
+    start = end - CHUNK_OVERLAP_WORDS
+  }
+  return ranges
+}
+
+/**
  * The LLM ranks candidates purely by how engaging each one is on its own,
  * with no instruction to spread them across the video — observed in
  * practice (2026-08-28) to reliably converge on the same handful of
@@ -337,12 +431,23 @@ function diversifySegments(segments: Segment[]): Segment[] {
 
 export const groqSegmentAnalyzer: SegmentAnalyzer = {
   async analyze(groq, words, videoDurationSeconds, metadata) {
-    const parsed = await requestSegments(groq, words, videoDurationSeconds, metadata)
+    // Each chunk is analyzed as if it were its own short transcript (its own
+    // duration, its own glossary matches) — word indices it returns are
+    // local to that chunk, so `offset` shifts them back to the full video's
+    // word array before any of the existing per-segment logic below (which
+    // all operates on `words`, the full array) runs.
+    const rawSegments: Array<{ s: z.infer<typeof llmSegmentResponseSchema>['segments'][number]; offset: number }> = []
+    for (const { start, end } of chunkWordRanges(words.length)) {
+      const chunkWords = words.slice(start, end)
+      const chunkDuration = chunkWords[chunkWords.length - 1]!.end - chunkWords[0]!.start
+      const parsed = await requestSegments(groq, chunkWords, chunkDuration, metadata)
+      for (const s of parsed.segments) rawSegments.push({ s, offset: start })
+    }
 
     const segments: Segment[] = []
-    for (const s of parsed.segments) {
-      const startIndex = Math.min(s.startWordIndex, words.length - 1)
-      let endIndex = Math.min(Math.max(s.endWordIndex, startIndex), words.length - 1)
+    for (const { s, offset } of rawSegments) {
+      const startIndex = snapStartIndexToSentenceStart(words, Math.min(s.startWordIndex + offset, words.length - 1))
+      let endIndex = Math.min(Math.max(s.endWordIndex + offset, startIndex), words.length - 1)
       if (s.endsAtSentenceEnd) {
         endIndex = snapEndIndexToPause(words, startIndex, endIndex)
       }
@@ -369,6 +474,21 @@ export const groqSegmentAnalyzer: SegmentAnalyzer = {
         endWord = words[endIndex]
       }
       if (!endWord || endWord.end <= startWord.start) continue
+
+      // The prompt already tells the model to avoid segments strung
+      // together from multiple long pauses (see buildPrompt) — confirmed in
+      // practice (2026-09-14) that it doesn't reliably follow that: a
+      // 179-236s candidate was re-picked after the rule was added, still
+      // 27.4s (48%) dead air across the same two gaps. Unlike a coherence
+      // judgment, "how much of this segment is silence" is mechanically
+      // measurable, so don't leave it to the model a second time — reject
+      // deterministically.
+      let deadAirSeconds = 0
+      for (let i = startIndex + 1; i <= endIndex; i++) {
+        const gap = words[i]!.start - words[i - 1]!.end
+        if (gap >= DEAD_AIR_GAP_THRESHOLD_SECONDS) deadAirSeconds += gap
+      }
+      if (deadAirSeconds / (endWord.end - startWord.start) > MAX_DEAD_AIR_FRACTION) continue
 
       // Padding is meant to add trailing silence/breathing room after the
       // clip's own content ends, not to reach into whatever's said next. If
