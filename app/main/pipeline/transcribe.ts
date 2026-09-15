@@ -16,6 +16,12 @@ export interface TranscriptionResult {
   durationSeconds: number
 }
 
+/** A stretch of the audio pyannote's VAD model judged to contain real speech (see whisperx_transcribe.py). */
+interface SpeechSegment {
+  start: number
+  end: number
+}
+
 /**
  * Whisper's word-level timestamps — whether from Groq's hosted
  * whisper-large-v3 (used here previously) or any other vanilla Whisper —
@@ -56,7 +62,7 @@ export interface TranscriptionResult {
 async function runWhisperX(
   audioPath: string,
   hint: string
-): Promise<{ words: WordTimestamp[]; durationSeconds: number }> {
+): Promise<{ words: WordTimestamp[]; durationSeconds: number; speechSegments: SpeechSegment[] }> {
   const projectRoot = join(__dirname, '../../..')
   const pythonPath = join(projectRoot, 'whisperx-venv', 'Scripts', 'python.exe')
   const scriptPath = join(__dirname, 'whisperx_transcribe.py')
@@ -67,8 +73,8 @@ async function runWhisperX(
       maxBuffer: 1024 * 1024 * 64
     })
     const raw = await readFile(outputPath, 'utf-8')
-    const parsed = JSON.parse(raw) as { words: WordTimestamp[]; duration: number }
-    return { words: parsed.words, durationSeconds: parsed.duration }
+    const parsed = JSON.parse(raw) as { words: WordTimestamp[]; duration: number; speechSegments: SpeechSegment[] }
+    return { words: parsed.words, durationSeconds: parsed.duration, speechSegments: parsed.speechSegments }
   } finally {
     await rm(outputPath, { force: true })
   }
@@ -78,9 +84,12 @@ export async function transcribeAudio(
   audioPath: string,
   metadata?: VideoMetadata
 ): Promise<TranscriptionResult> {
-  const { words, durationSeconds } = await runWhisperX(audioPath, buildTranscriptionHint(metadata))
+  const { words, durationSeconds, speechSegments } = await runWhisperX(audioPath, buildTranscriptionHint(metadata))
   const deduplicated = dropDuplicateBursts(words)
-  return { words: normalizeWordTimestamps(deduplicated), durationSeconds }
+  const normalized = normalizeWordTimestamps(deduplicated)
+  const clamped = clampWordsToSpeechSegments(normalized, speechSegments)
+  logLikelyDroppedWordGaps(clamped, speechSegments)
+  return { words: clamped, durationSeconds }
 }
 
 /**
@@ -189,4 +198,87 @@ function normalizeWordTimestamps(words: WordTimestamp[]): WordTimestamp[] {
     }
   }
   return result
+}
+
+/**
+ * VAD's real speech/silence detection (see whisperx_transcribe.py) as a
+ * cross-check on forced-alignment's word timestamps — added 2026-09-15 for
+ * the residual isolated-word desync bug (see bugs.md). Forced alignment can
+ * attribute a dropped/self-corrected phrase's silence to the surviving
+ * adjacent word's own duration (see normalizeWordTimestamps' doc comment
+ * above) — MAX_PLAUSIBLE_WORD_DURATION_SECONDS already caps that at 1.5s,
+ * but a word visually holding the screen for a full 1.5s into what's
+ * actually real silence still reads as broken. Verified directly
+ * (2026-09-15) against a real case: "than" was capped to exactly 1.5s
+ * (516.11-517.61) by the existing floor, but pyannote's VAD confirms real
+ * speech in that area actually stops at 516.25 — clamping to the VAD
+ * boundary (plus a small padding for VAD's own boundary imprecision and
+ * natural trailing consonants) removes the bogus ~1s of the word bleeding
+ * into real silence.
+ *
+ * Only clamps the END of a word that already overlaps a VAD speech segment
+ * at its start — a word whose *start* falls entirely outside every VAD
+ * segment (the original "Ah!" mislocated-by-~6s case in bugs.md) isn't
+ * relocated here; that would mean moving the word to a different position
+ * entirely, and that path hasn't been verified against real data yet.
+ */
+const VAD_END_PADDING_SECONDS = 0.3
+
+export function clampWordsToSpeechSegments(words: WordTimestamp[], speechSegments: SpeechSegment[]): WordTimestamp[] {
+  if (speechSegments.length === 0) return words
+  const result = words.map((w) => ({ ...w }))
+  let segIndex = 0
+
+  for (const word of result) {
+    while (segIndex < speechSegments.length - 1 && speechSegments[segIndex]!.end < word.start) {
+      segIndex++
+    }
+    const seg = speechSegments[segIndex]!
+    // Word starts before this (or any) VAD segment — not this fix's target, see doc comment.
+    if (word.start < seg.start) continue
+
+    const maxEnd = seg.end + VAD_END_PADDING_SECONDS
+    if (word.end > maxEnd) {
+      word.end = Math.max(word.start + MIN_PLAUSIBLE_WORD_DURATION_SECONDS, maxEnd)
+    }
+  }
+
+  return result
+}
+
+/**
+ * Diagnostic only — doesn't change output. Flags a VAD-confirmed speech
+ * stretch that ends up with little or no word coverage, meaning Whisper's
+ * ASR likely dropped real spoken content rather than just mistiming it (the
+ * OTHER known desync shape — see bugs.md's "ASR step, not alignment,
+ * silently drops a word" case; confirmed directly 2026-09-15 against a
+ * real VAD-confirmed 503.41-508.93s speech stretch that only two words,
+ * 1.4s apart, actually covered). VAD can't recover the missing text — this
+ * just surfaces the gap in pipeline logs rather than leaving it only
+ * discoverable by a user noticing a subtitle drop after the fact.
+ */
+const DROPPED_WORD_MIN_SEGMENT_SECONDS = 1.0
+const DROPPED_WORD_MAX_COVERAGE_FRACTION = 0.5
+
+export function logLikelyDroppedWordGaps(words: WordTimestamp[], speechSegments: SpeechSegment[]): void {
+  let wordIndex = 0
+  for (const seg of speechSegments) {
+    const segDuration = seg.end - seg.start
+    if (segDuration < DROPPED_WORD_MIN_SEGMENT_SECONDS) continue
+
+    while (wordIndex < words.length && words[wordIndex]!.end < seg.start) wordIndex++
+
+    let covered = 0
+    for (let i = wordIndex; i < words.length && words[i]!.start < seg.end; i++) {
+      const w = words[i]!
+      covered += Math.min(w.end, seg.end) - Math.max(w.start, seg.start)
+    }
+
+    if (covered / segDuration < DROPPED_WORD_MAX_COVERAGE_FRACTION) {
+      console.warn(
+        `[transcribe] Possible dropped word(s): VAD detected ${segDuration.toFixed(2)}s of speech at ` +
+          `${seg.start.toFixed(2)}s-${seg.end.toFixed(2)}s, but transcribed words only cover ${covered.toFixed(2)}s of it.`
+      )
+    }
+  }
 }

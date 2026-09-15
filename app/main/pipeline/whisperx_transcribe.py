@@ -21,6 +21,20 @@ nouns (level names, creators, game jargon) come out spelled correctly instead
 of phonetically mangled. It's a soft bias with a ~224-token budget, not a
 guarantee.
 
+Also runs a standalone voice-activity-detection (VAD) pass over the full
+audio and includes its speech segments in the output — added 2026-09-15 to
+address a residual desync bug (see bugs.md): an isolated word's forced-aligned
+timestamp can be wrong by several seconds, and a plain energy/silence check
+can't tell real (but quiet or SFX-adjacent) speech from game audio. WhisperX
+already runs VAD internally (pyannote's segmentation model, bundled locally —
+no download/token needed) to chunk audio before ASR, but doesn't expose the
+raw speech segments; this calls the same model directly, unchunked, so
+transcribe.ts can cross-check word timestamps against genuine detected
+speech rather than just amplitude. Binarize's `onset`/`offset` thresholds
+match WhisperX's own defaults (`vad_onset`/`vad_offset` in asr.py); no
+`max_duration` cap here since we want the model's natural speech/silence
+boundaries, not chunks sized for ASR batching.
+
 Usage: python whisperx_transcribe.py <audio_path> <output_json_path> [language] [initial_prompt]
 """
 import sys
@@ -29,6 +43,23 @@ import gc
 
 import torch
 import whisperx
+from whisperx.vads.pyannote import load_vad_model, Binarize, Pyannote
+
+
+def extract_speech_segments(audio, device: str) -> list[dict]:
+    vad_pipeline = load_vad_model(device)
+    waveform = Pyannote.preprocess_audio(audio)
+    scores = vad_pipeline({"waveform": waveform, "sample_rate": whisperx.audio.SAMPLE_RATE})
+
+    binarize = Binarize(onset=0.500, offset=0.363, min_duration_on=0.1, min_duration_off=0.1)
+    annotation = binarize(scores)
+
+    del vad_pipeline
+    gc.collect()
+    if device == "cuda":
+        torch.cuda.empty_cache()
+
+    return [{"start": seg.start, "end": seg.end} for seg in annotation.get_timeline()]
 
 
 def main() -> None:
@@ -73,6 +104,15 @@ def main() -> None:
         result["segments"], align_model, align_metadata, audio, device, return_char_alignments=False
     )
 
+    # Free the alignment model before the VAD pass for the same peak-VRAM
+    # reason as above — nothing here needs it anymore.
+    del align_model
+    gc.collect()
+    if device == "cuda":
+        torch.cuda.empty_cache()
+
+    speech_segments = extract_speech_segments(audio, device)
+
     words = []
     for segment in aligned["segments"]:
         for w in segment.get("words", []):
@@ -86,7 +126,7 @@ def main() -> None:
 
     duration = len(audio) / whisperx.audio.SAMPLE_RATE
     with open(output_path, "w", encoding="utf-8") as f:
-        json.dump({"words": words, "duration": duration}, f)
+        json.dump({"words": words, "duration": duration, "speechSegments": speech_segments}, f)
 
 
 if __name__ == "__main__":

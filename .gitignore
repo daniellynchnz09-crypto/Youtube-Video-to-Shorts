@@ -7,6 +7,7 @@ scratch/
 *.db
 *.sqlite
 whisperx-venv/
+__pycache__/
 
 # private, game-specific working copies — never commit
 local-private/
