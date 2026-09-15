@@ -24,7 +24,7 @@ export const groqTitleGenerator: TitleGenerator = {
     // sometimes already be a better title than what this step generates on
     // its own from the raw transcript. Feed it in as grounding, not something
     // to just restate.
-    const reasonNote = `\n\nWhy this moment was selected as a candidate clip (for context on what's actually engaging about it — don't just restate this verbatim as the title):\n${segmentReason}`
+    const reasonNote = `\n\nWhy this moment was selected as a candidate clip (for context on what's actually engaging about it — don't just restate this verbatim as the title). This description can make two separate things in the clip sound more connected than they really are — check any causal or explanatory link it implies against the transcript itself before building a title on it:\n${segmentReason}`
 
     // When the clip is a quick cut before a new topic (see analyze.ts), the
     // last stretch of transcript is often just a tease into something the
@@ -70,7 +70,7 @@ Don't personify a game mechanic or obstacle as an opponent with intent (e.g. a g
 
 Focus the title on ONE central aspect of the clip, not a list of separate things that happen to occur in it. If the clip contains two moments that aren't actually connected (e.g. the speaker notices something incidental, and separately works out an unrelated fact later on), pick whichever one the clip is actually about rather than mashing both into one title — a title that reads as "X and Y" is a sign two unrelated beats got stitched together instead of one being chosen.
 
-When the title states a cause ("X leaves me Y", "I'm Z because of W"), that cause must be one the speaker actually gives, not just an action mentioned somewhere nearby in the transcript. If the speaker states their own reason for a feeling or reaction, use that reason — don't substitute a more specific-sounding but incidental detail that happens to be close by in the transcript.
+When the title states a cause ("X leaves me Y", "I'm Z because of W"), that cause must be one the speaker actually gives, not just an action mentioned somewhere nearby in the transcript. If the speaker states their own reason for a feeling or reaction — even if it's a vaguer, less specific-sounding line than some other detail nearby — use THAT stated reason. A concrete, vivid-sounding incidental action (a single mistake, a specific object) is not automatically the real cause just because it's more quotable than the speaker's own plainer explanation.
 
 If the transcript clearly covers two separate, unrelated beats — one activity or topic ending and a different, unrelated one starting (e.g. quitting one level, then opening a completely different one afterward) — don't write a title that implies they're one connected narrative (e.g. describing the second topic as if it happened as part of the first). Base the title on whichever side has more substance, the same way the clip itself should.
 
