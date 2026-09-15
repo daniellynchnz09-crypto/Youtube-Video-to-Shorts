@@ -68,6 +68,12 @@ A specific level/character name from the glossary isn't mandatory in every title
 
 Don't personify a game mechanic or obstacle as an opponent with intent (e.g. a gamemode "beating" the player) unless the transcript is genuinely describing it that way — most of these are physics/level elements, not agents making decisions.
 
+Focus the title on ONE central aspect of the clip, not a list of separate things that happen to occur in it. If the clip contains two moments that aren't actually connected (e.g. the speaker notices something incidental, and separately works out an unrelated fact later on), pick whichever one the clip is actually about rather than mashing both into one title — a title that reads as "X and Y" is a sign two unrelated beats got stitched together instead of one being chosen.
+
+When the title states a cause ("X leaves me Y", "I'm Z because of W"), that cause must be one the speaker actually gives, not just an action mentioned somewhere nearby in the transcript. If the speaker states their own reason for a feeling or reaction, use that reason — don't substitute a more specific-sounding but incidental detail that happens to be close by in the transcript.
+
+If the transcript clearly covers two separate, unrelated beats — one activity or topic ending and a different, unrelated one starting (e.g. quitting one level, then opening a completely different one afterward) — don't write a title that implies they're one connected narrative (e.g. describing the second topic as if it happened as part of the first). Base the title on whichever side has more substance, the same way the clip itself should.
+
 Base the title on what's substantially discussed across most of the clip's runtime. Even when the transcript ends on a complete, well-formed sentence, don't build the title around a detail, question, or hook that only shows up in that closing line — if that subject isn't also present earlier in the transcript, it's not representative of the clip and shouldn't drive the title.${contextNote}${glossaryNote}${reasonNote}
 
 Transcript:
