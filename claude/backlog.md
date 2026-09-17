@@ -48,7 +48,17 @@ Being planned now, to be built once the review GUI exists (build-order step 4+).
 
 **Longer-term / more speculative:** user-submitted reference images of in-game assets + visual asset recognition (matching them against clip frames) to ground terminology in what's actually on screen, or auto-detect which game context applies. Bigger scope than the terminology half; a separate later pass.
 
-Not implemented — no schema, UI, wiki client, or asset-recognition wiring exists yet.
+**Wiki lookup — first working version (2026-09-18).** The "search → disambiguate → summarize" half of the plan above is implemented and verified against two real terms — see [`wikiLookup.ts`](../app/main/pipeline/wikiLookup.ts), driven by a `scratch/wiki/lookup-term.ts` CLI runner (there's no GUI yet, so this is the "workshop the definitions" entry point for now). Draft-only: nothing is written to `glossary.json` automatically — `lookupTermOnWiki()` returns a `{found, category, definition, confidence, notes, sourceUrl, sourceTitle, fetchedAt}` draft for review, matching the plan's "present for user approval" step.
+
+The wiki's base URL is read from `glossary.json`'s new `wikiBaseUrl` field (gitignored, real value local-only; `glossary.example.json` has the generic placeholder) — no game-specific strings live in `wikiLookup.ts` itself.
+
+Two things learned from testing against real terms, both fixed in the implementation rather than left as known gaps:
+- **This class of wiki doesn't support `action=query&prop=extracts`** (the TextExtracts MediaWiki extension) — confirmed directly, the API returned an "unrecognized parameter" warning and an empty extract. Content is fetched as raw wikitext via `action=parse&prop=wikitext` instead; the LLM summarization step handles the markup noise fine.
+- **A wiki can split content across multiple interlinked sites.** For a test term that's a user-created level, the canonical wiki only had a table-row mention, with an inline `[[w:c:<subwiki>:<term>]]` link out to a companion wiki's dedicated article — the real detail. `resolveInterwikiLink()` detects and follows exactly this pattern. A second test term (an official built-in level) worked the opposite way — directly on the canonical wiki's own overview-list page, no interwiki hop needed. Confirms the two-tier split (official/notable content lives directly on the canonical wiki; individual user-level articles often live on a companion wiki) is real, not a one-off oddity.
+- **A large list/overview page can bury the term's actual mention tens of thousands of characters in** — a naive head-truncation (needed to stay within Groq's token budget) missed the second test term entirely on an ~80K-char overview page, and the model correctly but unhelpfully reported the term wasn't discussed in what it was shown. Fixed with `truncateAroundTerm()`: centers the truncation window on the term's own first occurrence in the raw wikitext instead of the start of the page.
+- The free Groq model also isn't fully reliable about staying within the requested category enum (returned an empty string once) — same "free model drifts off a soft constraint" pattern as elsewhere in this project; handled by accepting any category string from the model and coercing an invalid one to `reference` with a flag in `notes`, rather than losing an otherwise-good grounded definition to a schema mismatch.
+
+Still not implemented: the GUI (still gated on build-order step 4+), unknown-term auto-detection wired to trigger a lookup automatically (today it's a manual per-term CLI call), and asset recognition.
 
 ## Batch segment selection clusters on the same handful of moments
 

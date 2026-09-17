@@ -25,6 +25,8 @@ interface GlossaryFile {
   entries: GlossaryEntry[]
   /** extra game/community-specific words to ignore when guessing new terms */
   candidateStopwords?: string[]
+  /** base URL (no trailing slash) of the game's community wiki, e.g. a Fandom site — used by wikiLookup.ts */
+  wikiBaseUrl?: string
 }
 
 /**
@@ -46,6 +48,10 @@ function file(): GlossaryFile {
 
 export function loadGlossary(): GlossaryEntry[] {
   return file().entries
+}
+
+export function getWikiBaseUrl(): string | undefined {
+  return file().wikiBaseUrl
 }
 
 function phraseRegex(form: string): RegExp {
