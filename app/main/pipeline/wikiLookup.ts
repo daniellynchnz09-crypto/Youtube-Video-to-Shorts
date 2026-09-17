@@ -71,11 +71,6 @@ function resolveInterwikiLink(wikitext: string, term: string): { baseUrl: string
 
 const VALID_CATEGORIES: GlossaryCategory[] = ['person', 'level', 'difficulty', 'mechanic', 'version', 'song', 'reference']
 
-// category is a free-form string here rather than a strict enum — the free
-// Groq model occasionally drifts off the requested category set (e.g.
-// returning "official level" instead of "level"), and losing an otherwise
-// good, grounded definition to a schema mismatch on one field is worse than
-// coercing it. See the fallback in lookupTermOnWiki below.
 /**
  * Truncates `text` to at most `maxChars`, centered on the term's own first
  * occurrence rather than the start of the text — see the caller's doc
@@ -98,6 +93,11 @@ function truncateAroundTerm(text: string, term: string, maxChars: number): strin
   return `${prefix}${text.slice(start, end)}${suffix}`
 }
 
+// category is a free-form string here rather than a strict enum — the free
+// Groq model occasionally drifts off the requested category set (e.g.
+// returning "official level" instead of "level"), and losing an otherwise
+// good, grounded definition to a schema mismatch on one field is worse than
+// coercing it. See the fallback in lookupTermOnWiki below.
 const draftSchema = z.object({
   found: z.boolean(),
   category: z.string(),
@@ -250,8 +250,11 @@ Respond with ONLY JSON matching: { "found": boolean, "category": string, "defini
   const category = VALID_CATEGORIES.includes(parsed.category as GlossaryCategory)
     ? (parsed.category as GlossaryCategory)
     : 'reference'
+  // Category is moot when the model didn't find a match (it often leaves it
+  // blank in that case) — only worth flagging the coercion when there's an
+  // actual definition it might mislabel.
   const notes =
-    category === parsed.category
+    !parsed.found || category === parsed.category
       ? parsed.notes
       : [parsed.notes, `(model returned category "${parsed.category}", not one of the valid options — defaulted to "reference", double-check)`]
           .filter(Boolean)

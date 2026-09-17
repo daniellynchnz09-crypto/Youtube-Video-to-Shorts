@@ -62,8 +62,8 @@ When the user provides a new YouTube link to make shorts from, the order is:
 1. **Transcribe first, don't render.** Run the video through download + metadata fetch + WhisperX transcription (with the metadata + glossary `initial_prompt` hint).
 2. **Deliver the transcript for review** — a readable, timestamped, sentence-grouped file — with:
    - every [glossary](#title-generation-context) term that appears in this transcript **flagged** (grouped by category, noting where the transcript's spelling is wrong), and
-   - a separate list of **candidate new terminology** not yet in the glossary (`findUnknownTermCandidates` — ALL-CAPS runs and repeated TitleCase phrases, minus known terms and stopwords).
-3. **User defines the new terms.** Their definitions are added to the local `glossary.json`.
+   - each **candidate new term** (`findUnknownTermCandidates` — ALL-CAPS runs and repeated TitleCase phrases, minus known terms and stopwords) automatically run through a wiki lookup (`wikiLookup.ts`, see [backlog.md](backlog.md#game-specific-context-terminology--asset-recognition)) and sorted into two buckets: a **drafted** definition (grounded in a wiki article, source cited) ready to approve or edit, or **needs your input** when the lookup doesn't land a confident match — deliberately one search attempt, not several retry/alternate-query strategies (user direction, 2026-09-18: ask rather than keep searching).
+3. **User resolves each term.** Approve/edit a draft, answer a "needs input" one directly, or say skip — added to the local `glossary.json` either way. Nothing is written automatically; every result, wiki-sourced or not, is presented as a draft.
 4. **Then** proceed to candidate analysis → review → render.
 
 This keeps the glossary growing with real usage, so each new video's subtitles and titles benefit from terminology learned on the previous ones.

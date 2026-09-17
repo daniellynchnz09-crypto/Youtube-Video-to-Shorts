@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { WordTimestamp } from '../../../shared/types.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -19,6 +20,8 @@ export interface GlossaryEntry {
   aliases: string[]
   misheard: string[]
   definition: string
+  /** present only for entries drafted via wikiLookup.ts — lets a stale entry be re-fetched later */
+  source?: { url: string; fetchedAt: string }
 }
 
 interface GlossaryFile {
@@ -212,4 +215,33 @@ export function formatGlossaryForPrompt(
     return `- ${entry.term} (${entry.category}): ${def}${wrongSpelling}`
   })
   return lines.join('\n')
+}
+
+const PAD_WORDS = 8
+
+/**
+ * Finds a short window of transcript text around a candidate term's first
+ * occurrence, for feeding to wikiLookup.ts's `contextSentence` — the LLM
+ * uses it to judge whether a wiki article actually matches what the video is
+ * talking about. Matches against the word array (not a plain string search
+ * on joined text) so a multi-word term is only matched as consecutive
+ * spoken words, and punctuation on the surrounding words doesn't matter.
+ */
+export function findTermContext(words: WordTimestamp[], term: string): string | undefined {
+  const normalize = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const targetTokens = term.split(/\s+/).map(normalize).filter(Boolean)
+  if (targetTokens.length === 0) return undefined
+
+  for (let i = 0; i <= words.length - targetTokens.length; i++) {
+    const matches = targetTokens.every((t, j) => normalize(words[i + j]!.word) === t)
+    if (matches) {
+      const start = Math.max(0, i - PAD_WORDS)
+      const end = Math.min(words.length, i + targetTokens.length + PAD_WORDS)
+      return words
+        .slice(start, end)
+        .map((w) => w.word)
+        .join(' ')
+    }
+  }
+  return undefined
 }
