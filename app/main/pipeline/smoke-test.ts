@@ -71,7 +71,7 @@ async function main(): Promise<void> {
   const metadata = await timed('fetch-metadata', () => fetchVideoMetadata(TEST_URL))
   console.log(`  -> "${metadata.title}", ${metadata.tags.length} tags`)
 
-  const { words, durationSeconds } = await timed('transcribe', () => transcribeAudio(paths.audioPath, metadata))
+  const { words, durationSeconds } = await timed('transcribe', () => transcribeAudio(paths.audioPath, metadata, groq))
   console.log(`  -> ${words.length} words, ${durationSeconds.toFixed(1)}s source duration`)
 
   db.prepare('UPDATE projects SET status = ? WHERE id = ?').run('analyzing', projectId)

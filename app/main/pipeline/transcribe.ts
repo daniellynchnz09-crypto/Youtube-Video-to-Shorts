@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto'
+import { createReadStream } from 'node:fs'
 import { readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import type Groq from 'groq-sdk'
 import type { VideoMetadata, WordTimestamp } from '../../../shared/types.js'
 import { buildTranscriptionHint } from './videoContext.js'
 
@@ -80,16 +82,26 @@ async function runWhisperX(
   }
 }
 
+/**
+ * `groq` is optional — passing it enables `reconcileMisplacedSentenceStarts`
+ * (see its doc comment). Without it, transcription still runs entirely
+ * locally as before (see the module doc comment on why that independence is
+ * worth preserving as the default).
+ */
 export async function transcribeAudio(
   audioPath: string,
-  metadata?: VideoMetadata
+  metadata?: VideoMetadata,
+  groq?: Groq
 ): Promise<TranscriptionResult> {
   const { words, durationSeconds, speechSegments } = await runWhisperX(audioPath, buildTranscriptionHint(metadata))
   const deduplicated = dropDuplicateBursts(words)
   const normalized = normalizeWordTimestamps(deduplicated)
   const clamped = clampWordsToSpeechSegments(normalized, speechSegments)
   logLikelyDroppedWordGaps(clamped, speechSegments)
-  return { words: clamped, durationSeconds }
+  const reconciled = groq
+    ? await reconcileMisplacedSentenceStarts(clamped, speechSegments, audioPath, groq)
+    : clamped
+  return { words: reconciled, durationSeconds }
 }
 
 /**
@@ -281,4 +293,130 @@ export function logLikelyDroppedWordGaps(words: WordTimestamp[], speechSegments:
       )
     }
   }
+}
+
+/**
+ * A confirmed, distinct desync shape from everything above (see bugs.md,
+ * 2026-09-18): forced-alignment can place the *first word of a new sentence*
+ * at the tail of the *previous* sentence's speech segment instead of at the
+ * start of its own — glued to the prior word with almost no gap despite a
+ * sentence boundary between them, then followed by an abnormally large gap
+ * before the sentence actually continues. Confirmed directly against real
+ * data: a word ("That's") that should have immediately preceded the next
+ * sentence was timed 2.7s before the pause that precedes it, not after, and
+ * an independent second transcription of just that window (Groq's hosted
+ * `whisper-large-v3`) agreed on the words but placed it correctly.
+ *
+ * Unlike `clampWordsToSpeechSegments`, this isn't safe to auto-correct from
+ * the deterministic signal alone: a short one-word reply genuinely spoken
+ * right after a sentence and genuinely followed by a real pause (e.g. "I
+ * have to say. Yeah. [pause] Anyway...") has the exact same shape and would
+ * be a false positive. Verified directly (2026-09-18) against a real video:
+ * the deterministic pattern below flagged 8 candidates out of ~2000 words;
+ * cross-checking each against a short independent transcription of just its
+ * own few-second window correctly relocated 6 with agreeing evidence and
+ * correctly left 2 alone where the independent pass didn't support a move
+ * (see `scratch/vad/test-sentence-start-correction.ts`, gitignored).
+ */
+const SENTENCE_START_TERMINAL_PUNCT = /[.!?]$/
+const SENTENCE_START_TIGHT_GAP_MAX_SECONDS = 0.15
+const SENTENCE_START_LOOSE_GAP_MIN_SECONDS = 1.0
+const SENTENCE_START_SEG_END_TOLERANCE_SECONDS = VAD_END_PADDING_SECONDS + 0.2
+// How far into the window (before the following word) a matching word must
+// land to count as supporting evidence for a relocation.
+const SENTENCE_START_MATCH_LOOKBACK_SECONDS = 2.0
+const SENTENCE_START_RELOCATE_GAP_SECONDS = 0.05
+
+function segmentIndexContaining(speechSegments: SpeechSegment[], t: number): number {
+  for (let i = 0; i < speechSegments.length; i++) {
+    if (t >= speechSegments[i]!.start && t <= speechSegments[i]!.end) return i
+  }
+  return -1
+}
+
+function findMisplacedSentenceStartCandidates(words: WordTimestamp[], speechSegments: SpeechSegment[]): number[] {
+  const candidates: number[] = []
+  for (let i = 1; i < words.length - 1; i++) {
+    const prev = words[i - 1]!
+    const cur = words[i]!
+    const next = words[i + 1]!
+    if (!SENTENCE_START_TERMINAL_PUNCT.test(prev.word.trim())) continue
+    if (cur.start - prev.end > SENTENCE_START_TIGHT_GAP_MAX_SECONDS) continue
+    if (next.start - cur.end < SENTENCE_START_LOOSE_GAP_MIN_SECONDS) continue
+
+    const prevSeg = segmentIndexContaining(speechSegments, prev.end)
+    const curSeg = segmentIndexContaining(speechSegments, cur.start)
+    const nextSeg = segmentIndexContaining(speechSegments, next.start)
+    if (prevSeg === -1 || curSeg === -1 || nextSeg === -1) continue
+    if (prevSeg !== curSeg || nextSeg === curSeg) continue
+
+    const seg = speechSegments[curSeg]!
+    if (Math.abs(cur.end - seg.end) > SENTENCE_START_SEG_END_TOLERANCE_SECONDS) continue
+
+    candidates.push(i)
+  }
+  return candidates
+}
+
+function normalizeForMatch(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+async function extractAudioWindow(audioPath: string, start: number, end: number, outPath: string): Promise<void> {
+  await execFileAsync('ffmpeg', ['-y', '-i', audioPath, '-ss', String(start), '-to', String(end), outPath], {
+    maxBuffer: 1024 * 1024 * 16
+  })
+}
+
+export async function reconcileMisplacedSentenceStarts(
+  words: WordTimestamp[],
+  speechSegments: SpeechSegment[],
+  audioPath: string,
+  groq: Groq
+): Promise<WordTimestamp[]> {
+  const candidates = findMisplacedSentenceStartCandidates(words, speechSegments)
+  if (candidates.length === 0) return words
+
+  const result = words.map((w) => ({ ...w }))
+
+  for (const i of candidates) {
+    const prev = result[i - 1]!
+    const cur = result[i]!
+    const next = result[i + 1]!
+    const windowStart = Math.max(0, prev.end - 1.5)
+    const windowEnd = next.end + 1.5
+    const tmpPath = join(tmpdir(), `yss-sentence-start-${randomUUID()}.mp3`)
+
+    try {
+      await extractAudioWindow(audioPath, windowStart, windowEnd, tmpPath)
+      const transcription = await groq.audio.transcriptions.create({
+        file: createReadStream(tmpPath),
+        model: 'whisper-large-v3',
+        response_format: 'verbose_json',
+        timestamp_granularities: ['word']
+      })
+      const groqWords = ((transcription as unknown as { words?: Array<{ word: string; start: number; end: number }> }).words) ?? []
+      const target = normalizeForMatch(cur.word)
+      const nextAbsStart = next.start
+      const match = groqWords.find((w) => {
+        const abs = windowStart + w.start
+        return normalizeForMatch(w.word) === target && abs <= nextAbsStart && abs >= nextAbsStart - SENTENCE_START_MATCH_LOOKBACK_SECONDS
+      })
+      if (match) {
+        const originalDuration = cur.end - cur.start
+        cur.end = next.start - SENTENCE_START_RELOCATE_GAP_SECONDS
+        cur.start = cur.end - originalDuration
+        console.warn(
+          `[transcribe] Relocated misplaced sentence-start "${cur.word}": was ${prev.end.toFixed(2)}s-adjacent, ` +
+            `moved to ${cur.start.toFixed(2)}s-${cur.end.toFixed(2)}s (independent cross-check confirmed).`
+        )
+      }
+    } catch (err) {
+      console.warn(`[transcribe] Sentence-start cross-check failed for word ${i} ("${cur.word}"), leaving as-is:`, err)
+    } finally {
+      await rm(tmpPath, { force: true })
+    }
+  }
+
+  return result
 }
